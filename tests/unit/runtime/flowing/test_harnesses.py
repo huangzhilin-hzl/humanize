@@ -12,10 +12,11 @@ from typing import TYPE_CHECKING, Any
 import pydantic
 import pytest
 
+from hmz.coganchor import AnchorConfig, backends
 from hmz.coganchor import agents as coganchor_agents
-from hmz.coganchor import backends
 from hmz.coganchor.agents import Question
 from hmz.coganchor.agents import base as coganchor_base
+from hmz.coganchor.machines import AnchoredConfig
 from hmz.flows import (
     AskUserHookAgentMixin,
     CostExceeded,
@@ -26,6 +27,7 @@ from hmz.flows import (
     HarnessNotInstalled,
     HarnessUnrecoverable,
     HookKind,
+    KeptSession,
     OutputTokensExceeded,
     OutworlderAway,
     Permission,
@@ -129,6 +131,13 @@ class Conversation:
         return forked
 
 
+class Recalled(Conversation):
+    """A conversation a run kept, recalled: its fork is cut, and named, by its own first turn."""
+
+    def fork(self, *, into: CLI | None = None, cwd: str | None = None) -> Conversation:
+        return Conversation(into or self.agent, self.cwd if cwd is None else cwd)
+
+
 class Hooks:
     """The moments a CLI fires itself; this one fires none."""
 
@@ -160,6 +169,7 @@ class CLI:
         self.loaded: list[Any] = []
         self.watched: list[Any] = []
         self.conversations: list[Conversation] = []
+        self.recalled: list[tuple[str, str, str | None]] = []
         self.stopped = 0
         CLI.built.append(self)
 
@@ -173,6 +183,17 @@ class CLI:
         conversation = Conversation(self, cwd)
         self.conversations.append(conversation)
         return conversation
+
+    def recall(self, session_id: str, kept: str, cwd: str | None) -> Recalled:
+        self.recalled.append((session_id, kept, cwd))
+        if session_id == "gone":
+            raise RuntimeError(f"claude: no conversation {session_id} under {kept}")
+        held = Recalled(self, cwd)
+        held.named = session_id
+        return held
+
+    def kept(self) -> Path:
+        return Path("/runs/now/sessions/claude")
 
     def reconfigure(self, config: Config) -> None:
         self.config = config
@@ -368,6 +389,105 @@ async def test_a_harness_that_cannot_fork_refuses_to(
     await session.close()
     with pytest.raises(SessionError, match="closed"):
         driver.cut_from(session, _placed(tmp_path), doing="fork")
+
+
+#: A conversation an earlier run kept, as a flow hands it back.
+TOLD = KeptSession(HarnessKind.CLAUDE, "told", "/runs/then/sessions/claude")
+
+
+async def _carrying(
+    driver: HarnessDriver, placement: Placement, kept: KeptSession = TOLD
+) -> HarnessSession:
+    return await driver.open(
+        placement, permission=Permission(), skills=(), hooks=HookTable(), carry_on=kept
+    )
+
+
+async def test_a_kept_conversation_is_carried_on_as_a_fork_cut_where_it_works(
+    coganchor: type[CLI], tmp_path: Path
+) -> None:
+    session = await _carrying(open_agent(_spec()), _placed(tmp_path))
+
+    assert _cli(session).recalled == [("told", TOLD.directory, str(tmp_path))]
+    assert (session.id, session.kept) == (None, None)
+    await session.turn(TurnRequest("what was the word?"), Sink())
+    assert session.kept == KeptSession(
+        HarnessKind.CLAUDE, "conversation-1", "/runs/now/sessions/claude"
+    )
+
+
+@pytest.mark.parametrize(
+    ("harness", "native", "here"),
+    [("local", False, True), ("local", True, False), ("ssh://harbor", False, False)],
+    ids=["harnessed-here", "native-there", "harnessed-elsewhere"],
+)
+async def test_a_conversation_is_kept_here_only_by_a_cli_run_here(
+    coganchor: type[CLI], tmp_path: Path, harness: str, native: bool, here: bool
+) -> None:
+    session = await _session(open_agent(_spec()), tmp_path)
+    await session.turn(TurnRequest("go"), Sink())
+    anchor = AnchorConfig(target="ssh://box", harness=harness, native=native)
+    _cli(session).config = Config(machine=AnchoredConfig(anchor=anchor))
+
+    assert (session.kept is not None) is here
+
+
+@pytest.mark.parametrize(
+    ("kept", "forks", "machine", "why"),
+    [
+        (
+            KeptSession(HarnessKind.CODEX, "told", "/runs/then/sessions/codex"),
+            True,
+            None,
+            "claude cannot carry on a conversation codex kept",
+        ),
+        (TOLD, False, None, "claude cannot fork a session"),
+        (TOLD, True, "a machine", "cannot carry a kept conversation onto another"),
+    ],
+    ids=["kept-by-another", "unforked-harness", "other-machine"],
+)
+async def test_a_kept_conversation_is_refused_before_anything_is_built(
+    coganchor: type[CLI],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kept: KeptSession,
+    forks: bool,
+    machine: Any,
+    why: str,
+) -> None:
+    monkeypatch.setattr(backends, "named", returning(Profile(forks=forks)))
+    driver = open_agent(_spec())
+    built = len(coganchor.built)
+
+    with pytest.raises(UnsupportedOperation, match=why):
+        await _carrying(
+            driver, dataclasses.replace(_placed(tmp_path), machine=machine), kept
+        )
+    assert len(coganchor.built) == built
+
+
+async def test_a_kept_conversation_that_is_not_there_cannot_be_forked(
+    coganchor: type[CLI], tmp_path: Path
+) -> None:
+    gone = KeptSession(HarnessKind.CLAUDE, "gone", "/runs/then/sessions/claude")
+
+    with pytest.raises(SessionError, match="cannot be forked: claude: no conversation"):
+        await _carrying(open_agent(_spec()), _placed(tmp_path), gone)
+
+
+async def test_a_carried_on_session_moved_before_a_turn_named_it_is_recalled_there(
+    coganchor: type[CLI], tmp_path: Path
+) -> None:
+    (tmp_path / "other").mkdir()
+    (tmp_path / "third").mkdir()
+    session = await _carrying(open_agent(_spec()), _placed(tmp_path))
+
+    assert await session.move(_placed(tmp_path / "other"))
+    assert _cli(session).recalled == [("told", TOLD.directory, str(tmp_path / "other"))]
+    await session.turn(TurnRequest("go on"), Sink())
+    assert await session.move(_placed(tmp_path / "third"))
+    assert _cli(session).recalled == [], "named: moved as a fork of its own"
+    assert session.coganchor.named == "conversation-2"
 
 
 async def test_closing_the_driver_closes_its_sessions_and_opens_no_more(

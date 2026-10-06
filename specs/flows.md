@@ -215,6 +215,12 @@ class Usage(pydantic.BaseModel):
     cost: float = 0.0 # In USD.
     output_tokens: int = 0
 
+@dataclass(frozen=True)
+class KeptSession:
+    harness: HarnessKind
+    id: str # The harness's own id for the conversation.
+    directory: str # Where it is kept, laid out as the harness lays out its home: a run's `sessions/<cli>/`, or a copy of one.
+
 class Session(Protocol):
     # Only a conversation's history: where a turn works is the turn's own (`run(env=...)`),
     # so one session may take its turns in different environments.
@@ -223,6 +229,9 @@ class Session(Protocol):
 
     @property
     def usage(self) -> Usage: ... # Live updated.
+
+    @property
+    def kept(self) -> KeptSession | None: ... # None before a turn has named the conversation, and where it is kept on another machine.
 
 class Agent(Protocol):
     _permission: ClassVar[Permission]
@@ -286,7 +295,12 @@ class Agent(Protocol):
         budget: Budget | None = None,
     ) -> TOutput: ...
 
-    async def spawn(self) -> Session: ... # Starts no CLI: its first turn does, where it works.
+    async def spawn(
+        self,
+        *,
+        carry_on: KeptSession | None = None,
+    ) -> Session: ... # Starts no CLI: its first turn does, where it works.
+        # With `carry_on`, that turn forks a conversation kept by this run or an earlier one, copied into where this run keeps its sessions; the copy it came from is left as it was, and a copy this run holds is never replaced. That turn refuses it (UnsupportedOperation) for a harness that cannot fork, did not keep it, or works on another machine, and (SessionError) for a conversation that is not where it says, or of which this run holds a different copy.
 
 class Outworlder(Agent, Protocol): ...
     # Automatically added to the agent collection if requested, and the user cannot override it.

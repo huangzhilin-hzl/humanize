@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import shutil
 import time
 from pathlib import PurePosixPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pydantic
 import pytest
@@ -29,6 +31,7 @@ from hmz.flows import (
     GPUEnvMixin,
     HarnessKind,
     HookKind,
+    KeptSession,
     OutputSchemaError,
     OutputTokensExceeded,
     Outworlder,
@@ -65,6 +68,9 @@ from hmz.runtime.flowing.spi import (
 )
 from tests.unit.runtime.flowing.doubles_u11 import until
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
 HERE = Placement(EnvBackendKind.LOCAL, "", PurePosixPath("/work"))
 
 
@@ -83,6 +89,7 @@ async def _open(
     hooks: HookTable | None = None,
     placement: Placement = HERE,
     fork_of: Any = None,
+    carry_on: KeptSession | None = None,
 ) -> FakeSession:
     return await driver.open(
         placement,
@@ -90,6 +97,7 @@ async def _open(
         skills=(),
         hooks=hooks or HookTable(),
         fork_of=fork_of,
+        carry_on=carry_on,
     )
 
 
@@ -505,6 +513,146 @@ async def test_a_session_moves_where_its_harness_can_carry_it() -> None:
     with pytest.raises(UnsupportedOperation):
         await opencode.move(elsewhere)
     assert await fresh.move(elsewhere), "nothing to carry: started afresh there"
+
+
+# ---------------------------------------------------------------------- kept conversations
+
+
+async def _told(driver: FakeAgentDriver, *prompts: str) -> FakeSession:
+    """A session of `driver` that has been told each of `prompts`, a turn each."""
+    told = await _open(driver)
+    for prompt in prompts:
+        await told.turn(TurnRequest(prompt), Sink())
+    return told
+
+
+async def test_a_kept_conversation_is_carried_on_from_where_it_has_got_to() -> None:
+    """As a real CLI's: `kept` names where it is kept, which goes on with it."""
+    told = await _open(FakeAgentDriver())
+    assert told.kept is None
+    await told.turn(TurnRequest("the word is papaya"), Sink())
+    kept = told.kept
+    await told.turn(TurnRequest("the word is mango"), Sink())
+    later = FakeAgentDriver(reply=_upper)
+
+    carried = await _open(later, carry_on=kept)
+    assert carried.kept is None
+    said = await carried.turn(TurnRequest("what was the word?"), Sink())
+
+    assert kept is not None
+    assert (kept.harness, kept.id) == (HarnessKind.CLAUDE, told.id)
+    assert told.kept == kept, "read again, the same place"
+    assert (carried.carried_on, said) == (kept, "WHAT WAS THE WORD?")
+    assert carried.prompts == [
+        "the word is papaya",
+        "the word is mango",
+        "what was the word?",
+    ]
+    assert carried.id != told.id
+    assert told.prompts == ["the word is papaya", "the word is mango"]
+
+
+async def test_a_copy_of_where_a_conversation_is_kept_is_carried_on_as_it_was(
+    tmp_path: Path,
+) -> None:
+    told = await _told(FakeAgentDriver(), "the word is papaya")
+    kept = told.kept
+    assert kept is not None
+    shutil.copytree(kept.directory, tmp_path / "copy")
+    await told.turn(TurnRequest("the word is mango"), Sink())
+
+    carried = await _open(
+        FakeAgentDriver(),
+        carry_on=dataclasses.replace(kept, directory=str(tmp_path / "copy")),
+    )
+
+    assert carried.prompts == ["the word is papaya"]
+
+
+async def test_a_conversation_kept_in_a_database_is_kept_nowhere_to_carry_on() -> None:
+    told = await _told(FakeAgentDriver(HarnessKind.OPENCODE), "the word is papaya")
+
+    with pytest.raises(SessionError, match="opencode: no conversation"):
+        await _open(FakeAgentDriver(HarnessKind.OPENCODE), carry_on=told.kept)
+
+
+ELSEWHERE = Placement(EnvBackendKind.LOCAL, "", PurePosixPath("/elsewhere"))
+
+
+@pytest.mark.parametrize(
+    ("harness", "carried"),
+    [(HarnessKind.QWEN, False), (HarnessKind.PI, False), (HarnessKind.CODEX, True)],
+)
+async def test_a_harness_that_forks_only_in_place_carries_on_only_there(
+    harness: HarnessKind, carried: bool
+) -> None:
+    told = await _told(FakeAgentDriver(harness), "the word is papaya")
+    later = FakeAgentDriver(harness)
+
+    if carried:
+        await _open(later, placement=ELSEWHERE, carry_on=told.kept)
+    else:
+        with pytest.raises(
+            SessionError, match="only in the workdir it was had in, /work"
+        ):
+            await _open(later, placement=ELSEWHERE, carry_on=told.kept)
+        moved = await _open(later, carry_on=told.kept)
+        with pytest.raises(SessionError, match="only in the workdir it was had in"):
+            await moved.move(ELSEWHERE)
+        assert moved.placement == HERE
+
+
+@pytest.mark.parametrize(
+    ("driver", "placement", "kept", "why"),
+    [
+        (
+            FakeAgentDriver(HarnessKind.CODEX),
+            HERE,
+            KeptSession(HarnessKind.CLAUDE, "x", "/kept"),
+            "codex cannot carry on a conversation claude kept",
+        ),
+        (
+            FakeAgentDriver(forks=False),
+            HERE,
+            KeptSession(HarnessKind.CLAUDE, "x", "/kept"),
+            "cannot fork",
+        ),
+        (
+            FakeAgentDriver(HarnessKind.CURSOR_AGENT),
+            HERE,
+            KeptSession(HarnessKind.CURSOR_AGENT, "x", "/kept"),
+            "cannot fork",
+        ),
+        (
+            FakeAgentDriver(),
+            Placement(EnvBackendKind.SSH, "box", PurePosixPath("/work")),
+            KeptSession(HarnessKind.CLAUDE, "x", "/kept"),
+            "onto another machine",
+        ),
+        (
+            FakeAgentDriver(),
+            HERE,
+            KeptSession(HarnessKind.CLAUDE, "never-kept", "/kept"),
+            "cannot be forked: claude: no conversation never-kept under /kept",
+        ),
+    ],
+    ids=["kept-by-another", "told-not-to", "unforked-harness", "other-machine", "gone"],
+)
+async def test_a_kept_conversation_a_harness_could_not_carry_on_is_refused(
+    driver: FakeAgentDriver, placement: Placement, kept: KeptSession, why: str
+) -> None:
+    with pytest.raises((UnsupportedOperation, SessionError), match=why):
+        await _open(driver, placement=placement, carry_on=kept)
+    assert driver.sessions == []
+
+
+async def test_a_carried_on_session_moves_only_on_the_machine_it_was_kept_on() -> None:
+    told = await _told(FakeAgentDriver(), "a")
+    carried = await _open(FakeAgentDriver(), carry_on=told.kept)
+
+    with pytest.raises(UnsupportedOperation, match="onto another machine"):
+        await carried.move(Placement(EnvBackendKind.SSH, "box", PurePosixPath("/work")))
+    assert await carried.move(ELSEWHERE)
 
 
 # ---------------------------------------------------------------------------- environments

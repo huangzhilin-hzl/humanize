@@ -41,7 +41,7 @@ type BoundHook = Callable[[SessionHandle, dict[str, Any]], Awaitable[HookResult]
 def default_result(kind: HookKind) -> HookResult: ...
 class HookTable:  # set / get / `in` / async fire(kind, handle, /, **fields)
 class HookBridge:  # here() / call(make, *, default) / abandon() / close()
-class SessionHandle(Protocol): ...  # id, usage, turn, move, steer, interrupt, close
+class SessionHandle(Protocol): ...  # id, kept, usage, turn, move, steer, interrupt, close
 class AgentDriver(Protocol): ...  # harness, model, effort, provider, capabilities, open, close
 class EnvDriver(Protocol): ...  # backend, provider, workdir, capabilities, resources, exec,
                                # read, write, derive_*, destroy_*, snapshot, rewind,
@@ -424,6 +424,13 @@ def under() -> Path: ...  # machine()/skills
   where the move made it a conversation of another id. A fork MUST be refused with
   `SessionError` when its session has taken no turn, and at its first turn when that session
   has taken one since.
+- A session spawned to carry on a kept conversation MUST be the harness's own fork of it, cut by
+  its first turn, which MUST refuse it before the harness is started or anything is copied where
+  the harness did not keep it, cannot fork, or the turn works on another machine, or the run
+  holds a different copy of it already; until a turn has named it, a move MUST cut it from that
+  conversation again. `kept` MUST answer where the harness keeps a session's conversation once
+  its id is known, as data a later run can be handed, and None before and for a harness run on
+  another machine.
 - An outworlder that is away MUST answer `""` for text, the schema built from its defaults
   where every field has one, and `OutworlderAway` otherwise. One made with `Outworlder.new()`
   MUST be away until a hook is hung on it with `on_outworlder_run`.

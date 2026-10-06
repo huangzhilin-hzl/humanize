@@ -30,7 +30,8 @@ A session is a conversation and nothing of where it works: each turn says where,
 driver's session is opened only as its first turn goes, there -- which is when the engine
 starts holding it -- and moved before each turn after it to wherever that one works. A fork
 holds the session it was forked from until its first turn, which is where a harness cuts it,
-and is refused then if that session has taken a turn since.
+and is refused then if that session has taken a turn since. A session spawned to carry on a
+conversation a run kept is opened by its first turn the same way, as a fork of that one.
 """
 
 from __future__ import annotations
@@ -64,6 +65,7 @@ from hmz.flows import (
     GoalCommandAgentMixin,
     HarnessKind,
     HookKind,
+    KeptSession,
     LoopCommandAgentMixin,
     NotificationHookParams,
     OutputSchemaError,
@@ -359,10 +361,16 @@ class AgentView:
         view._line = self._lined()
         return view
 
-    async def spawn(self) -> SessionView:
+    async def spawn(self, *, carry_on: KeptSession | None = None) -> SessionView:
+        if carry_on is not None and not isinstance(carry_on, KeptSession):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise TypeError(f"carry_on={carry_on!r} is not a KeptSession")
         self._node.check()
         self._lined()
-        return SessionView(self)
+        view = SessionView(self)
+        # Carried on as its first turn opens it, where that turn works: refused there, by
+        # the driver, where it cannot be.
+        view._carry_on = carry_on
+        return view
 
     async def fork(self, session: Session) -> SessionView:
         forked = self._own(session)
@@ -425,6 +433,7 @@ class AgentView:
             skills=self._brought(),
             hooks=line.hooks,
             fork_of=None if parent is None else parent._handle,
+            carry_on=session._carry_on,
         )
         if parent is not None:
             try:
@@ -727,6 +736,7 @@ class SessionView:
         "__weakref__",
         "_agent",
         "_busy",
+        "_carry_on",
         "_closed",
         "_error",
         "_forked_at",
@@ -750,6 +760,8 @@ class SessionView:
         self._closed = False
         self._error: Exception | None = None
         self._parent: SessionView | None = None
+        #: The kept conversation its first turn forks, or None.
+        self._carry_on: KeptSession | None = None
         #: How many turns it has been asked for, and how many the session it was forked from
         #: had been when it was forked -- which is where its first turn cuts it.
         self._turns = 0
@@ -774,6 +786,12 @@ class SessionView:
         """The CLI's own id for the conversation, or None before it has said one."""
         handle = self._handle
         return None if handle is None else handle.id
+
+    @property
+    def kept(self) -> KeptSession | None:
+        """Where the CLI keeps the conversation, or None before it has said its id."""
+        handle = self._handle
+        return None if handle is None else handle.kept
 
     def _named(self) -> None:
         """Its CLI has named it: written down and told, against the call that opened it.
@@ -1232,6 +1250,10 @@ class _Person:
         return None
 
     @property
+    def kept(self) -> KeptSession | None:
+        return None
+
+    @property
     def usage(self) -> Usage:
         return _NOTHING
 
@@ -1330,7 +1352,9 @@ class OutworlderView:
             raise CapabilityNotGranted(f"{self._role}: an outworlder has no skills")
         return self
 
-    async def spawn(self) -> SessionView:
+    async def spawn(self, *, carry_on: KeptSession | None = None) -> SessionView:
+        if carry_on is not None:
+            raise UnsupportedOperation("an outworlder carries on no conversation")
         if self._node is not None:
             self._node.check()
         return SessionView(self, _Person(self._source))

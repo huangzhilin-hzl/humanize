@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+import json
 from pathlib import PurePosixPath
 from typing import Any, cast
 
@@ -24,6 +26,7 @@ from hmz.flows import (
     GitWorktreeEnvMixin,
     HarnessKind,
     HookKind,
+    KeptSession,
     LiteLLMAgent,
     OutputSchemaError,
     OutworlderAway,
@@ -310,6 +313,7 @@ async def test_a_session_is_opened_by_its_first_turn_and_owned_by_its_agent() ->
 
     assert type(session) is SessionView
     assert (session.id, session.usage, session.agent) == (None, Usage(), view)
+    assert session.kept is None
     assert node.checks == 1
     assert repr(session) == "<session of coder>"
     with pytest.raises(SessionError, match="no turn is in flight"):
@@ -320,6 +324,8 @@ async def test_a_session_is_opened_by_its_first_turn_and_owned_by_its_agent() ->
         await other.fork(session)
     with pytest.raises(CapabilityNotGranted, match="steer needs"):
         await other.steer("x", session=session)
+    with pytest.raises(TypeError, match="is not a KeptSession"):
+        await view.spawn(carry_on={"harness": "claude"})  # pyright: ignore[reportArgumentType]
 
 
 # --------------------------------------------------------------------- an agent in a run
@@ -421,6 +427,90 @@ async def test_a_model_called_directly_works_in_no_environment() -> None:
         await run_fake(model_in_env)
 
 
+@flow(agents=Plain, envs=Repo, params=Prompt)
+async def keeping(
+    task: str, *, agents: Plain, envs: Repo, params: Prompt, ctx: FlowContext
+) -> list[KeptSession | None]:
+    coder = agents["coder"]
+    session = await coder.spawn()
+    unnamed = session.kept
+    await coder.run("the word is papaya", session=session, env=envs["repo"])
+    return [unnamed, session.kept]
+
+
+@flow(agents=Plain, envs=Repo, params=Prompt)
+async def carrying(
+    task: str, *, agents: Plain, envs: Repo, params: Prompt, ctx: FlowContext
+) -> str:
+    coder = agents["coder"]
+    session = await coder.spawn(carry_on=KeptSession(**json.loads(task)))
+    try:
+        return await coder.run("what was the word?", session=session, env=envs["repo"])
+    except (UnsupportedOperation, SessionError) as refused:
+        return f"refused by its first run: {refused}"
+
+
+def _again(prompt: str, **_: Any) -> str:
+    return f"re: {prompt}"
+
+
+async def _kept() -> KeptSession:
+    """A conversation a run kept, as that run's flow wrote it down."""
+    unnamed, kept = await run_fake(keeping)
+    assert unnamed is None
+    assert kept is not None
+    return kept
+
+
+async def test_a_conversation_one_run_kept_is_carried_on_by_a_later_one() -> None:
+    kept = await _kept()
+    coder = FakeAgentDriver(reply=_again)
+
+    said = await run_fake(
+        carrying, json.dumps(dataclasses.asdict(kept)), agents={"coder": coder}
+    )
+
+    assert said == "re: what was the word?"
+    (carried,) = coder.sessions
+    assert carried.carried_on == kept
+    assert carried.prompts == ["the word is papaya", "what was the word?"]
+    assert carried.placement.workdir == PurePosixPath("/repo")
+
+
+@pytest.mark.parametrize(
+    ("coder", "repo", "named", "why"),
+    [
+        (FakeAgentDriver("codex"), None, "", "codex cannot carry on a conversation"),
+        (FakeAgentDriver(forks=False), None, "", "claude cannot fork a session"),
+        (
+            FakeAgentDriver(),
+            FakeEnvDriver(backend="ssh", provider="box"),
+            "",
+            "onto another machine",
+        ),
+        (FakeAgentDriver(), None, "never-kept", "no conversation never-kept"),
+    ],
+    ids=["kept-by-another", "unforked", "other-machine", "gone"],
+)
+async def test_a_kept_conversation_is_refused_by_the_first_run_of_its_session(
+    coder: FakeAgentDriver, repo: FakeEnvDriver | None, named: str, why: str
+) -> None:
+    kept = await _kept()
+    if named:
+        kept = dataclasses.replace(kept, id=named)
+
+    said = await run_fake(
+        carrying,
+        json.dumps(dataclasses.asdict(kept)),
+        agents={"coder": coder},
+        envs={} if repo is None else {"repo": repo},
+    )
+
+    assert said.startswith("refused by its first run: ")
+    assert why in said
+    assert coder.sessions == []
+
+
 class Hooked(AgentCollection):
     coder: ClaudeCodeAgent
 
@@ -497,6 +587,9 @@ async def test_the_runs_outworlder_answers_as_the_role_it_was_filled_for() -> No
         view.derive(skills=("x",))
     with pytest.raises(UnsupportedOperation):
         await view.fork(session)
+    assert session.kept is None
+    with pytest.raises(UnsupportedOperation, match="carries on no conversation"):
+        await view.spawn(carry_on=KeptSession(HarnessKind.CLAUDE, "x", "/kept"))
     with pytest.raises(CapabilityNotGranted, match=r"Outworlder\.new"):
         view.on_outworlder_run(None)
 

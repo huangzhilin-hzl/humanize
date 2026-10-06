@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import inspect
+import json
 import math
 import operator
 from typing import Any
@@ -25,6 +26,7 @@ from hmz.flows import (
     GoalCommandAgentMixin,
     GrokBuildAgent,
     HarnessKind,
+    KeptSession,
     KimiCodeAgent,
     LiteLLMAgent,
     LoopCommandAgentMixin,
@@ -256,6 +258,33 @@ def test_usage_survives_json() -> None:
         duration=datetime.timedelta(seconds=3), cost=math.inf, output_tokens=9
     )
     assert Usage.model_validate_json(usage.model_dump_json()) == usage
+
+
+# ---------------------------------------------------------------------------- KeptSession
+
+
+def test_a_kept_session_is_written_down_and_read_back_as_it_was() -> None:
+    kept = KeptSession(HarnessKind.CODEX, "thread-1", "/runs/one/sessions/codex")
+
+    written = json.dumps(dataclasses.asdict(kept))
+    again = KeptSession(**json.loads(written))
+
+    assert again == kept
+    assert again.harness is HarnessKind.CODEX
+    assert json.loads(written) == {
+        "harness": "codex",
+        "id": "thread-1",
+        "directory": "/runs/one/sessions/codex",
+    }
+
+
+def test_a_kept_session_names_a_harness_and_cannot_be_changed() -> None:
+    kept = KeptSession(HarnessKind.CLAUDE, "x", "/kept")
+
+    with pytest.raises(ValueError, match="nobody"):
+        KeptSession("nobody", "x", "/kept")  # pyright: ignore[reportArgumentType]
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        kept.id = "y"  # pyright: ignore[reportAttributeAccessIssue]
 
 
 # ------------------------------------------------------------------- the harness protocols

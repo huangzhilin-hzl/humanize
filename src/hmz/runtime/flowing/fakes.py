@@ -27,7 +27,12 @@ granted what it declared -- with the drivers underneath swapped for these::
   forks only in place, and not -- refused at the fork's first turn, where a CLI cuts it --
   from a session that has taken a turn since the fork was opened. A session's turns move
   where a real one's do: anywhere on the machine it is on for a harness that forks
-  elsewhere, and only to where it already works for every other.
+  elsewhere, and only to where it already works for every other. A session's `kept` is a
+  directory on this machine its conversation is written to as it goes on, once that is read,
+  as a real CLI writes its own: a session spawned to carry it on, in this run or a later one of
+  this process, starts from what it says by then, or from a copy of it taken earlier -- where
+  a real one would, on the harness that kept it, where that forks, on this machine, and in the
+  workdir it was had in for a harness that forks only in place.
 - :class:`FakeEnvDriver` is a dictionary of files under a workdir, with worktrees,
   temporary copies, scratch directories and snapshots as copies of it, and `exec` answered by a
   function or a table, with a few commands -- `true`, `false`, `echo`, `cat`, `ls`, `sleep`
@@ -44,16 +49,20 @@ the engine's own tests hold them to it.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import datetime
+import functools
 import inspect
 import itertools
 import json
 import math
+import shutil
+import tempfile
 import threading
 import time
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
 
 import pydantic
@@ -68,6 +77,7 @@ from hmz.flows import (
     EnvFileNotFound,
     HarnessKind,
     HookKind,
+    KeptSession,
     OutputSchemaError,
     OutputTokensExceeded,
     PermissionRequestHookAgentMixin,
@@ -85,7 +95,6 @@ from .spi import ENV_CAPABILITIES, HARNESS_CAPABILITIES, Placement
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Sequence
-    from pathlib import Path
 
     from hmz.flows import (
         AskUserHookResult,
@@ -169,6 +178,34 @@ _UNFORKED = frozenset(
 _FORKS_ELSEWHERE = frozenset(
     {HarnessKind.CLAUDE, HarnessKind.CODEX, HarnessKind.KIMI, HarnessKind.LITELLM}
 )
+
+#: The harnesses whose CLI keeps a conversation as rows of a database rather than as files
+#: of its own, as coganchor's profiles say: nothing of one is kept anywhere to carry on.
+_IN_A_DATABASE = frozenset({HarnessKind.OPENCODE, HarnessKind.MIMO})
+
+
+@functools.cache
+def _home() -> Path:
+    """Where this process's fakes keep their conversations: made once, gone as it ends."""
+    made = Path(tempfile.mkdtemp(prefix="hmz-fake-sessions-"))
+    atexit.register(shutil.rmtree, made, ignore_errors=True)
+    return made
+
+
+def _keeps(harness: HarnessKind) -> Path:
+    """Where fakes of a harness keep their conversations, a file named for each one's id."""
+    at = _home() / harness
+    at.mkdir(parents=True, exist_ok=True)
+    return at
+
+
+def _here(placement: Placement) -> bool:
+    """Whether a turn at `placement` works on this machine, as a fake environment says."""
+    return (placement.backend, placement.provider, placement.machine) == (
+        EnvBackendKind.LOCAL,
+        "",
+        None,
+    )
 
 
 def _as(said: object, schema: type[pydantic.BaseModel] | None, who: str) -> Any:
@@ -258,6 +295,7 @@ class FakeSession:
       permission: What it runs under.
       skills: What it was given.
       forked_from: The session it carries on from, or None.
+      carried_on: The kept conversation it carries on, or None.
       prompts: Every prompt it was given, hooks' context included, and every reason a `STOP`
         hook kept a turn going with.
       requests: Every turn it was asked for, limits and all.
@@ -279,6 +317,7 @@ class FakeSession:
         skills: tuple[Skill, ...],
         hooks: HookTable,
         forked_from: FakeSession | None,
+        carried_on: KeptSession | None = None,
     ) -> None:
         self.driver = driver
         self.placement = placement
@@ -287,8 +326,11 @@ class FakeSession:
         self.skills = skills
         self.hooks = hooks
         self.forked_from = forked_from
+        self.carried_on = carried_on
         self._id = f"fake-{next(self._numbers)}"
         self.prompts: list[str] = list(forked_from.prompts) if forked_from else []
+        #: Whether its `kept` has been read, from when on what it is told is written there.
+        self._keeping = False
         self.requests: list[TurnRequest] = []
         self.steered: list[tuple[str, bool]] = []
         self.tools: list[tuple[str, dict[str, Any], bool]] = []
@@ -319,6 +361,32 @@ class FakeSession:
         if self.driver.names_late and (not self.named or self._renamed):
             return None
         return self._id
+
+    @property
+    def kept(self) -> KeptSession | None:
+        """Where it is kept, once a turn has named it: a directory on this machine.
+
+        What it has been told is written there as `<id>.json` as this is read, and after every
+        turn from then on, as a real CLI writes its conversation as it goes on -- but for a
+        harness that keeps it in a database. A copy of the directory is what it was told up
+        to then.
+        """
+        if not self.named or self._renamed:
+            return None
+        self._keeping = True
+        self._keep()
+        harness = self.driver.harness
+        return KeptSession(harness, self._id, str(_keeps(harness)))
+
+    def _keep(self) -> None:
+        """Writes what it has been told where it is kept, once its `kept` has been read."""
+        harness = self.driver.harness
+        if not self._keeping or not self.named or self._renamed:
+            return
+        if harness in _IN_A_DATABASE:
+            return
+        said = {"prompts": self.prompts, "workdir": str(self.placement.workdir)}
+        (_keeps(harness) / f"{self._id}.json").write_text(json.dumps(said))
 
     @property
     def usage(self) -> Usage:
@@ -411,6 +479,7 @@ class FakeSession:
             self._turning = False
             if timer is not None:
                 timer.cancel()
+            self._keep()
 
     def _expire(self) -> None:
         """The turn's hard deadline has come: it stops."""
@@ -451,6 +520,9 @@ class FakeSession:
         if self.named:
             moved = self.driver.carried(was, placement, "move")
         else:
+            if self.carried_on is not None:
+                # Cut from the kept conversation there instead, as a real one is.
+                self.prompts = self.driver.recalled(self.carried_on, placement)
             # Nothing to carry: started afresh wherever it is to work, as a real one is.
             moved = (was.backend, was.provider, was.machine, was.workdir) != (
                 placement.backend,
@@ -590,6 +662,12 @@ class FakeAgentDriver:
         refused with :class:`~hmz.flows.SessionError` -- and only on the machine it is on
         and, but for Claude Code, Codex and Kimi Code, in the workdir it is in -- each
         refused with :class:`~hmz.flows.UnsupportedOperation` -- as a real driver refuses it.
+        A kept conversation is carried on only by the harness that kept it, where it forks,
+        and on this machine -- each refused with :class:`~hmz.flows.UnsupportedOperation`
+        -- and only from a directory a fake's `kept` named in this process, or a copy of one,
+        which holds it: not for a harness that keeps it in a database, and, on one that
+        forks only in place, only in the workdir it was had in -- each refused with
+        :class:`~hmz.flows.SessionError`.
       names_late: Whether a session says its id only once its first turn has started, as a
         real CLI's does, rather than as it opens.
 
@@ -651,8 +729,10 @@ class FakeAgentDriver:
         skills: tuple[Skill, ...],
         hooks: HookTable,
         fork_of: Any = None,
+        carry_on: KeptSession | None = None,
     ) -> FakeSession:
         forked: FakeSession | None = None
+        told = None if carry_on is None else self.recalled(carry_on, placement)
         if fork_of is not None:
             # In the order a real driver refuses them.
             if not isinstance(fork_of, FakeSession) or fork_of.driver is not self:
@@ -665,11 +745,55 @@ class FakeAgentDriver:
                 raise UnsupportedOperation(f"{self.harness} cannot fork a session")
             self.carried(fork_of.placement, placement, "fork")
             forked = fork_of
-        session = FakeSession(self, placement, permission, skills, hooks, forked)
+        session = FakeSession(
+            self, placement, permission, skills, hooks, forked, carry_on
+        )
+        if told is not None:
+            session.prompts = told
         self.sessions.append(session)
         self.live += 1
         self.peak = max(self.peak, self.live)
         return session
+
+    def recalled(self, carry_on: KeptSession, placement: Placement) -> list[str]:
+        """What a kept conversation has been told, for a session carrying it on at `placement`.
+
+        Refused in the order a real driver refuses it.
+
+        Raises:
+          UnsupportedOperation: If another harness kept it, this one cannot fork, or
+            `placement` is on another machine.
+          SessionError: If nothing under its directory is it, or this harness forks only in
+            place and `placement` is another workdir than the one it was had in.
+        """
+        harness = self.harness
+        if carry_on.harness != harness:
+            raise UnsupportedOperation(
+                f"{harness} cannot carry on a conversation {carry_on.harness} kept"
+            )
+        if not self.forks:
+            raise UnsupportedOperation(f"{harness} cannot fork a session")
+        if not _here(placement):
+            raise UnsupportedOperation(
+                f"{harness} cannot carry a kept conversation onto another machine"
+            )
+        try:
+            said = json.loads(
+                (Path(carry_on.directory) / f"{carry_on.id}.json").read_text()
+            )
+        except (OSError, ValueError):
+            raise SessionError(
+                f"the session cannot be forked: {harness}: no conversation "
+                f"{carry_on.id} under {carry_on.directory}"
+            ) from None
+        if harness not in _FORKS_ELSEWHERE and said["workdir"] != str(
+            placement.workdir
+        ):
+            raise SessionError(
+                f"the session cannot be forked: {harness} carries on conversation "
+                f"{carry_on.id} only in the workdir it was had in, {said['workdir']}"
+            )
+        return list(said["prompts"])
 
     def carried(self, was: Placement, placement: Placement, doing: str) -> bool:
         """Whether a conversation at `was` carried to `placement` is one of another id.

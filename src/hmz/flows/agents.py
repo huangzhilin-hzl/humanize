@@ -18,9 +18,9 @@ agent declared without :class:`SteeringAgentMixin`, or a `/goal` prompt without
 whatever the harness underneath could do. A role typed as one harness's own protocol --
 :class:`ClaudeCodeAgent` and the rest -- asks for that harness and everything it can do.
 
-Everything here but the enums, :class:`Permission`, :class:`Budget` and :class:`Usage` is a
-protocol for a type checker. What a flow is handed at run time is the runtime's own object,
-shaped however is fastest, and answers to these structurally.
+Everything here but the enums, :class:`Permission`, :class:`Budget`, :class:`Usage` and
+:class:`KeptSession` is a protocol for a type checker. What a flow is handed at run time is the
+runtime's own object, shaped however is fastest, and answers to these structurally.
 """
 
 from __future__ import annotations
@@ -78,6 +78,7 @@ __all__ = [
     "GoalCommandAgentMixin",
     "GrokBuildAgent",
     "HarnessKind",
+    "KeptSession",
     "KimiCodeAgent",
     "LiteLLMAgent",
     "LoopCommandAgentMixin",
@@ -279,6 +280,35 @@ class Usage(pydantic.BaseModel):
     output_tokens: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class KeptSession:
+    """A conversation as its CLI keeps it, for a session of this run or a later one to carry on.
+
+    Plain data, so that a flow can write it down -- beside a snapshot of the workspace it was
+    working in, say -- with `dataclasses.asdict`, read it back from JSON with
+    `KeptSession(**fields)`, which makes the name `harness` was written as a
+    :class:`HarnessKind` again, and hand it to :meth:`Agent.spawn` in a run that has not
+    started yet.
+
+    Attributes:
+      harness: The CLI that holds it.
+      id: What that CLI calls it.
+      directory: Where it is kept, laid out as the CLI lays out its home: a run's
+        `sessions/<cli>/`, which goes on with the conversation, or a copy of one, which holds
+        it as it was when the copy was taken.
+
+    Raises:
+      ValueError: If `harness` is not a harness.
+    """
+
+    harness: HarnessKind
+    id: str
+    directory: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "harness", HarnessKind(self.harness))
+
+
 class Session(Protocol):
     """One conversation of one agent: its history, and nothing of where it works.
 
@@ -297,6 +327,16 @@ class Session(Protocol):
     @property
     def usage(self) -> Usage:
         """What its turns have spent so far, up to date whenever it is read."""
+        ...
+
+    @property
+    def kept(self) -> KeptSession | None:
+        """Where its CLI keeps the conversation, or None before a turn has named it.
+
+        What :meth:`Agent.spawn` takes as `carry_on`, in this run or a later one, for as long
+        as that directory -- or a copy of it -- is still there. None too for a harness run on
+        another machine, which keeps the conversation there.
+        """
         ...
 
 
@@ -454,11 +494,23 @@ class Agent(Protocol):
         budget: Budget | None = None,
     ) -> TOutput: ...
 
-    async def spawn(self) -> Session:
+    async def spawn(self, *, carry_on: KeptSession | None = None) -> Session:
         """Opens a new session of this agent, which works wherever its turns are taken.
 
         Its CLI is started as its first turn goes, which is where a harness that cannot be
         started there raises :class:`~hmz.flows.errors.HarnessError`.
+
+        Args:
+          carry_on: A conversation kept by this run or an earlier one -- a session's
+            :attr:`Session.kept` -- for the new session to fork, or None for one that starts
+            from nothing. Its first turn starts out knowing what that conversation knows by
+            then, and goes on as a conversation of its own: the conversation is copied into
+            where this run keeps its sessions as that turn starts, never over a copy of it
+            there already, and the one it was copied from is left as it was. That turn raises
+            :class:`~hmz.flows.errors.UnsupportedOperation` where this harness cannot fork or
+            did not keep it, or the turn works on another machine, and
+            :class:`~hmz.flows.errors.SessionError` where the conversation is not where it
+            says, or this run holds a different copy of it.
 
         Returns:
           The session, with no turns taken yet.
