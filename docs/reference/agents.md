@@ -686,11 +686,11 @@ history; its first turn performs the fork.
   with those of every conversation it was cut from up the `forked_from_id` its first line
   names (Codex), and the files they came from are left as they were. Each is linked into place
   whole, and only where nothing is there yet: a file `agent.kept()` holds already is never
-  replaced, and one that differs refuses that turn before anything is copied, `RuntimeError:
-  <cli>: another copy of conversation <id> is kept at <path> already, which carrying this one
-  on would replace`. A Claude Code fork in another directory is cut from the transcript brought
-  in. A backend with no fork: `NotImplementedError`; nothing of the conversation under `kept`:
-  `RuntimeError: <cli>: no conversation <id> under <kept>`. Under a flow,
+  replaced, and one that differs refuses that turn before anything is copied, with a
+  `RuntimeError` naming the CLI, the conversation and the copy already kept, which carrying this
+  one on would replace. A Claude Code fork in another directory is cut from the transcript brought
+  in. A backend with no fork: `NotImplementedError`; nothing of the conversation under `kept`: a
+  `RuntimeError` naming the conversation and where it was looked for. Under a flow,
   [`agent.spawn(carry_on=session.kept)`](/reference/flows#spawn).
 
 ### Working directory {#the-directory-a-session-works-in}
