@@ -142,6 +142,12 @@ class AgentBase(ABC):
     def node(self) -> Provider: ...
     def stands_in(self) -> AgentBase | None: ...
     def new(self, cwd: str | os.PathLike[str] | None = None) -> SessionBase: ...  # abstract
+    def recall(
+        self,
+        session_id: str,
+        kept: str | os.PathLike[str],
+        cwd: str | os.PathLike[str] | None = None,
+    ) -> SessionBase: ...
     # Overloaded, as on a session: `str` where no schema is given, `T | None` where one is.
     def __call__[T: BaseModel](
         self,
@@ -735,6 +741,15 @@ class BackendAgent(AgentBase):
   has landed, and MUST NOT hand back a second handle on one conversation. A fork into another agent
   MUST be kept where the conversation it was cut from is, and MUST be refused (`ValueError`) into
   one that keeps its sessions somewhere else already.
+- `recall` MUST answer a session holding a conversation kept elsewhere -- an earlier run's
+  `sessions/<cli>/`, or a copy of one -- that takes no turn of its own and whose `fork` carries it
+  on. Every file under `kept` with that conversation's id in its path, and with the id of every
+  conversation it was cut from up the line its first line names (`forked_from_id`), MUST be
+  copied into `kept()` where it sat there, each whole, as that fork's first turn starts and not
+  before, and the files it was copied from MUST be left as they were. A file already in `kept()`
+  MUST NOT be replaced: where one differs from its copy, that turn MUST raise `RuntimeError`
+  before any is copied. It MUST raise `NotImplementedError` where the backend has no fork and
+  `RuntimeError` where nothing under `kept` is the conversation.
 - Every session of an agent a run drives MUST be kept in `keeps` -- its run's -- and nothing of it
   in the CLI's own home: answered by the turn's supervisor, or told to the CLI where its driver
   tells it where. `keeps` MUST be settled by the first process that keeps one there, and MUST

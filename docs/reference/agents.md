@@ -679,6 +679,19 @@ history; its first turn performs the fork.
   its first `run(…, env=…)`; a fork onto another machine is `UnsupportedOperation: <cli>
   cannot fork a session onto another machine`. A session whose turn is given another workdir
   is carried there the same way, as a fork of itself, where the backend forks elsewhere.
+- `agent.recall(session_id, kept, cwd=None)` returns a session holding a conversation kept
+  somewhere else -- an earlier run's `sessions/<cli>/`, or a copy of one -- which takes no turn
+  of its own; its `fork()` carries it on. As that fork's first turn starts, every file under
+  `kept` with the conversation's id in its path is copied into `agent.kept()` where it sat,
+  with those of every conversation it was cut from up the `forked_from_id` its first line
+  names (Codex), and the files they came from are left as they were. Each is linked into place
+  whole, and only where nothing is there yet: a file `agent.kept()` holds already is never
+  replaced, and one that differs refuses that turn before anything is copied, `RuntimeError:
+  <cli>: another copy of conversation <id> is kept at <path> already, which carrying this one
+  on would replace`. A Claude Code fork in another directory is cut from the transcript brought
+  in. A backend with no fork: `NotImplementedError`; nothing of the conversation under `kept`:
+  `RuntimeError: <cli>: no conversation <id> under <kept>`. Under a flow,
+  [`agent.spawn(carry_on=session.kept)`](/reference/flows#spawn).
 
 ### Working directory {#the-directory-a-session-works-in}
 
