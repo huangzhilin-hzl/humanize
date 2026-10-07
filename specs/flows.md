@@ -215,9 +215,9 @@ class Usage(pydantic.BaseModel):
     cost: float = 0.0 # In USD.
     output_tokens: int = 0
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class KeptSession:
-    harness: HarnessKind
+    harness: HarnessKind # Read back from its name as written to JSON; a name that is no harness's raises ValueError.
     id: str # The harness's own id for the conversation.
     directory: str # Where it is kept, laid out as the harness lays out its home: a run's `sessions/<cli>/`, or a copy of one.
 

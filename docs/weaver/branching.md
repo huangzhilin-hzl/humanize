@@ -261,7 +261,7 @@ await asyncio.gather(
 
 **Carry on a conversation from an earlier run.** A session's `kept` says where its CLI keeps
 the conversation, as plain data a flow can write down once a turn has named it. Hand it to
-`spawn` in a later run, on the same CLI, and the new session is a fork of that conversation,
+`fork` in a later run, on the same CLI, and the new session is a fork of that conversation,
 cut by its first turn:
 
 ```python
@@ -289,8 +289,8 @@ run's own files too. Copy it only where the run keeps its sessions itself, as it
 Linux: on macOS, or under `HUMANIZE_SESSIONS=off`, the directory is the CLI's own home, with
 your sign-in in it ([which is which](/reference/flows#keptsession)). A copy is copied in, never
 moved, so it can be carried on as often as you like. What the CLI cannot carry on is refused by
-the new session's first `run`, as a fork is; on a CLI that forks only in place, take that turn
-in the directory the conversation was had in. See [`Agent.spawn`](/reference/flows#spawn).
+the fork's first `run`; on a CLI that forks only in place, take that turn in the directory the
+conversation was had in. See [`Agent.fork`](/reference/flows#fork).
 
 **Fork or derive?** They sound alike and do opposite things:
 

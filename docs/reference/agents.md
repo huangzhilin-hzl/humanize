@@ -691,7 +691,7 @@ history; its first turn performs the fork.
   one on would replace. A Claude Code fork in another directory is cut from the transcript brought
   in. A backend with no fork: `NotImplementedError`; nothing of the conversation under `kept`: a
   `RuntimeError` naming the conversation and where it was looked for. Under a flow,
-  [`agent.fork(session.kept)`](/reference/flows#fork).
+  [`agent.fork(kept)`](/reference/flows#fork), with a session's `kept` that is not `None`.
 
 ### Working directory {#the-directory-a-session-works-in}
 
@@ -1706,6 +1706,7 @@ class AgentBase:
     def __call__(prompt, *, suppress=False, schema=…, cwd: Where = None) -> str | T | None
     def pursue(objective, *, suppress=False, cwd: Where = None) -> str
     def new(cwd: Where = None) -> SessionBase
+    def recall(session_id, kept, cwd: Where = None) -> SessionBase
     async def aturn(...); async def apursue(...)
     def batch(prompts, *, suppress=False, schema=…, at_once=0, cwd: Where = None) -> list
     async def abatch(...)

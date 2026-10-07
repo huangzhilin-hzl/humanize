@@ -704,7 +704,9 @@ when forked. A kept conversation is cut where its directory has it as that turn 
 
 | Condition | Raises |
 | --- | --- |
-| `session` not this agent's, or closed | `SessionError` (`<role>: the session to fork is over`) |
+| the call's caller or the run has ended | `FlowCancelled` |
+| `session` neither a `KeptSession` nor one of this agent's sessions | `SessionError`: `<role>: <session> is not one of this agent's` |
+| `session` closed | `SessionError`: `<role>: the session to fork is over` |
 | `session` has taken no turn | `SessionError`: `<role>: the session to fork has taken no turn to carry on from` |
 
 What the harness cannot do is raised by the fork's first `run`:
@@ -723,9 +725,10 @@ The parent is held open until the fork's first turn. See
 **A fork of a `KeptSession`.** The conversation's files are copied into where this run keeps
 its sessions as the fork's first turn starts; the ones they were copied from are left as they
 were, so one kept conversation can be carried on any number of times. A copy this run holds
-already is never replaced: see [`KeptSession`](#keptsession). The fork itself refuses only an
-outworlder's, and what the harness cannot do is raised by its first `run`, before its CLI is
-started or anything is copied:
+already is never replaced: see [`KeptSession`](#keptsession). The fork itself refuses one only
+for an outworlder, and, as every call, once its caller or the run has ended (`FlowCancelled`);
+what the harness cannot do is raised by its first `run`, before its CLI is started or anything
+is copied:
 
 | Condition | Raises |
 | --- | --- |
@@ -735,7 +738,10 @@ started or anything is copied:
 | nothing of the conversation under its `directory` | `SessionError`: `the session cannot be forked: <harness>: no conversation <id> under <directory>` |
 | a different copy of the conversation where this run keeps its sessions already | `SessionError`: `<harness>: another copy of conversation <id> is kept at <path> already, which carrying this one on would replace` |
 
-A refused turn leaves the fork unopened, ready for a turn elsewhere. Until a turn of it has
+A turn refused for any but the last of these leaves the fork unopened, ready for a turn
+elsewhere. The last is raised later in that turn, after its `SESSION_START` and
+`USER_PROMPT_SUBMIT` hooks and just before its CLI would start: the fork is open where that turn
+works by then, nothing has been copied, and its next turn tries again. Until a turn of it has
 named it, a turn given another workdir cuts it there instead.
 
 On a harness that forks only in its own directory (`grok`, `mimo`, `opencode`, `pi`, `qwen`,
@@ -2049,7 +2055,7 @@ FakeAgentDriver(harness: HarnessKind | str = "claude", *, reply: Reply = None,
 | `model`, `effort`, `provider` | Reported identity. |
 | `capabilities` | Mixins served, overriding the harness's. |
 | `cost`, `output_tokens`, `seconds` | Reported per answer; nothing waits. |
-| `forks` | Whether it can fork; `None` for whether its harness can (all but `cursor-agent`, `mcode`, `agy`, `dsh`). A fork is refused as [`Agent.fork`](#fork) refuses it: of a session with no turn, onto another machine, or into another workdir on a harness other than Claude Code, Codex or Kimi Code; and at its first turn if the parent has taken a turn since. A [fork](#fork) of a `KeptSession` is refused as a real one is, by its first turn, and on a harness that forks only in place by one in another workdir than the conversation was had in (`SessionError`); it starts from the prompts the conversation had been given as that turn starts, read from where a fake session's `kept` names, or from a copy of that directory. |
+| `forks` | Whether it can fork; `None` for whether its harness can (all but `cursor-agent`, `mcode`, `agy`, `dsh`). A fork is refused as [`Agent.fork`](#fork) refuses it: of a session with no turn, onto another machine, or into another workdir on a harness other than Claude Code, Codex or Kimi Code; and at its first turn if the parent has taken a turn since. A [fork](#fork) of a `KeptSession` is refused as a real one is, by its first turn, and on a harness that forks only in place by one in another workdir than the conversation was had in (`SessionError`); it starts from the prompts the conversation had been given as that turn starts, read from where a fake session's `kept` names, or from a copy of that directory. A fake does not hold a run to one copy of a conversation: a fork of a different copy of one the run carried on already is not refused, as it is for real. |
 | `names_late` | Sessions have no id until their first turn gets past its hooks. |
 
 | Attribute | |

@@ -429,13 +429,26 @@ class AgentView:
         line = self._lined()
         if run.dropped:
             run.drain()
-        handle = await self._driver.open(
-            placement,
-            permission=self._grant.permission,
-            skills=self._brought(),
-            hooks=line.hooks,
-            fork_of=None if parent is None else parent._handle,
-            carry_on=session._carry_on,
+        fork_of = None if parent is None else parent._handle
+        # `carry_on` only for a fork of a kept conversation, so that a driver written to the
+        # SPI from before it opens every other session as it did.
+        handle = await (
+            self._driver.open(
+                placement,
+                permission=self._grant.permission,
+                skills=self._brought(),
+                hooks=line.hooks,
+                fork_of=fork_of,
+            )
+            if session._carry_on is None
+            else self._driver.open(
+                placement,
+                permission=self._grant.permission,
+                skills=self._brought(),
+                hooks=line.hooks,
+                fork_of=fork_of,
+                carry_on=session._carry_on,
+            )
         )
         if parent is not None:
             try:

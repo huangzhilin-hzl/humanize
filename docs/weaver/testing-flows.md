@@ -365,7 +365,9 @@ so run the parent once before forking it and take the fork's first turn before t
 next. A fake session's `kept` can be handed to `fork(…)` in a later `run_fake` of the
 same test, and the fork starts out with the prompts the first has been given by its
 first turn, as a real one does; a copy of `kept.directory` holds the prompts it had been given
-when it was copied. `model=`, `effort=` and `provider=` set what it reports about itself.
+when it was copied. Unlike a real run, a fake one does not refuse a second, different copy of a
+conversation it has carried on already. `model=`, `effort=` and `provider=` set what it reports
+about itself.
 
 **The driver keeps what happened**, for the test to read afterwards:
 

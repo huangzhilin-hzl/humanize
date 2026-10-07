@@ -272,7 +272,7 @@ One run ([Tracing › Epics](/reference/tracing#epics) has every schema). `<stam
 | `profile.jsonl` | profiled runs only | [profile](/reference/tracing#profile-jsonl) |
 | `host.log` | runs held by a [host process](/reference/daemon#files) only; appended (`0600`), never rotated | that process's descriptors 1 and 2 while the run is the one it holds: output of the CLIs the run started, and the carrier's failures |
 | `.held` | empty, `0600`; `flock`ed exclusively by the process running the run until `ended` is written | a run whose `.held` is locked is still going, and is not [picked up](/reference/cli#picking-a-run-up) |
-| `sessions/<cli>/…` | by the CLI itself, redirected; and by humanize, a conversation a session [carries on](/reference/flows#spawn) copied in as its first turn starts, a file at a time, never over one already there | the CLI's own layout |
+| `sessions/<cli>/…` | by the CLI itself, redirected; and by humanize, a conversation a session [carries on](/reference/flows#fork) copied in as its first turn starts, a file at a time, never over one already there | the CLI's own layout |
 | `traces/*.trace.json` | on demand; plain write | [Chrome trace](/reference/tracing#document) |
 
 Epics are never deleted by humanize.
@@ -333,7 +333,7 @@ when their content changes.
 
 Where a run keeps no sessions of its own ([which turns](/reference/tracing#sessions-dir)), a CLI's
 home is written to as the run's `sessions/<cli>/` would be: a conversation a session
-[carries on](/reference/flows#spawn) is copied in where it sat in the copy carried on, never
+[carries on](/reference/flows#fork) is copied in where it sat in the copy carried on, never
 over a file already there, and Claude Code's transcript of a conversation forked into another
 directory is copied to that directory's folder under `projects/`.
 

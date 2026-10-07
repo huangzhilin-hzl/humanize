@@ -20,6 +20,7 @@ from hmz.flows import (
     EnvBackendKind,
     EnvCollection,
     FilesEnvMixin,
+    FlowCancelled,
     FlowContext,
     FlowParams,
     GitEnvMixin,
@@ -475,6 +476,63 @@ async def test_a_conversation_one_run_kept_is_carried_on_by_a_later_one() -> Non
     assert carried.carried_on == kept
     assert carried.prompts == ["the word is papaya", "what was the word?"]
     assert carried.placement.workdir == PurePosixPath("/repo")
+
+
+#: The agents runs of `lingering` were handed, held past the end of their runs.
+LINGERED: list[Agent] = []
+
+
+@flow(agents=Plain, envs=NoEnvs, params=Prompt)
+async def lingering(
+    task: str, *, agents: Plain, envs: NoEnvs, params: Prompt, ctx: FlowContext
+) -> None:
+    LINGERED.append(agents["coder"])
+
+
+async def test_a_kept_conversation_is_forked_only_while_the_run_goes_on() -> None:
+    kept = await _kept()
+    LINGERED.clear()
+    await run_fake(lingering)
+
+    (coder,) = LINGERED
+    with pytest.raises(FlowCancelled):
+        await coder.fork(kept)
+    with pytest.raises(FlowCancelled):
+        await coder.spawn()
+
+
+class _BeforeCarryOn(FakeAgentDriver):
+    """A driver written to the SPI from before `carry_on`: its `open` takes no such word."""
+
+    async def open(  # pyright: ignore[reportIncompatibleMethodOverride]
+        self,
+        placement: Any,
+        *,
+        permission: Any,
+        skills: Any,
+        hooks: Any,
+        fork_of: Any = None,
+    ) -> Any:
+        return await super().open(
+            placement,
+            permission=permission,
+            skills=skills,
+            hooks=hooks,
+            fork_of=fork_of,
+        )
+
+
+async def test_a_driver_from_before_carry_on_opens_every_other_session_as_it_did() -> (
+    None
+):
+    coder = _BeforeCarryOn(reply="fine")
+    # Not an AgentDriver of today's SPI, which is the point: one of the SPI before it.
+    agents = cast("dict[str, Any]", {"coder": coder})
+
+    said = await run_fake(plain, agents=agents, params={"prompt": "go"})
+
+    assert said == "fine"
+    assert coder.prompts == ["go"]
 
 
 @pytest.mark.parametrize(
