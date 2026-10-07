@@ -324,8 +324,8 @@ async def test_a_session_is_opened_by_its_first_turn_and_owned_by_its_agent() ->
         await other.fork(session)
     with pytest.raises(CapabilityNotGranted, match="steer needs"):
         await other.steer("x", session=session)
-    with pytest.raises(TypeError, match="is not a KeptSession"):
-        await view.spawn(carry_on={"harness": "claude"})  # pyright: ignore[reportArgumentType]
+    with pytest.raises(SessionError, match="not one of this agent's"):
+        await view.fork({"harness": "claude"})  # pyright: ignore[reportArgumentType]
 
 
 # --------------------------------------------------------------------- an agent in a run
@@ -443,7 +443,7 @@ async def carrying(
     task: str, *, agents: Plain, envs: Repo, params: Prompt, ctx: FlowContext
 ) -> str:
     coder = agents["coder"]
-    session = await coder.spawn(carry_on=KeptSession(**json.loads(task)))
+    session = await coder.fork(KeptSession(**json.loads(task)))
     try:
         return await coder.run("what was the word?", session=session, env=envs["repo"])
     except (UnsupportedOperation, SessionError) as refused:
@@ -589,7 +589,7 @@ async def test_the_runs_outworlder_answers_as_the_role_it_was_filled_for() -> No
         await view.fork(session)
     assert session.kept is None
     with pytest.raises(UnsupportedOperation, match="carries on no conversation"):
-        await view.spawn(carry_on=KeptSession(HarnessKind.CLAUDE, "x", "/kept"))
+        await view.fork(KeptSession(HarnessKind.CLAUDE, "x", "/kept"))
     with pytest.raises(CapabilityNotGranted, match=r"Outworlder\.new"):
         view.on_outworlder_run(None)
 

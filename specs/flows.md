@@ -262,8 +262,9 @@ class Agent(Protocol):
 
     async def fork(
         self,
-        session: Session,
+        session: Session | KeptSession,
     ) -> Session: ... # Cut at its own first turn, in the environment that turn is given.
+        # From a session of this agent: where it was when forked. From a KeptSession -- a session's `kept`, written down by this run or an earlier one -- what its directory holds as that turn starts, copied into where this run keeps its sessions; the copy it came from is left as it was, and a copy this run holds is never replaced. That turn refuses a KeptSession (UnsupportedOperation) for a harness that cannot fork, did not keep it, or works on another machine, and (SessionError) for a conversation that is not where it says, or of which this run holds a different copy.
 
     @overload
     def hook(
@@ -295,12 +296,7 @@ class Agent(Protocol):
         budget: Budget | None = None,
     ) -> TOutput: ...
 
-    async def spawn(
-        self,
-        *,
-        carry_on: KeptSession | None = None,
-    ) -> Session: ... # Starts no CLI: its first turn does, where it works.
-        # With `carry_on`, that turn forks a conversation kept by this run or an earlier one, copied into where this run keeps its sessions; the copy it came from is left as it was, and a copy this run holds is never replaced. That turn refuses it (UnsupportedOperation) for a harness that cannot fork, did not keep it, or works on another machine, and (SessionError) for a conversation that is not where it says, or of which this run holds a different copy.
+    async def spawn(self) -> Session: ... # Starts no CLI: its first turn does, where it works.
 
 class Outworlder(Agent, Protocol): ...
     # Automatically added to the agent collection if requested, and the user cannot override it.

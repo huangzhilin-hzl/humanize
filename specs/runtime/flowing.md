@@ -424,7 +424,7 @@ def under() -> Path: ...  # machine()/skills
   where the move made it a conversation of another id. A fork MUST be refused with
   `SessionError` when its session has taken no turn, and at its first turn when that session
   has taken one since.
-- A session spawned to carry on a kept conversation MUST be the harness's own fork of it, cut by
+- A fork of a kept conversation MUST be the harness's own fork of it, cut by
   its first turn, which MUST refuse it before the harness is started or anything is copied where
   the harness did not keep it, cannot fork, or the turn works on another machine, or the run
   holds a different copy of it already; until a turn has named it, a move MUST cut it from that

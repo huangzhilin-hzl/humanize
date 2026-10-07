@@ -691,7 +691,7 @@ history; its first turn performs the fork.
   one on would replace. A Claude Code fork in another directory is cut from the transcript brought
   in. A backend with no fork: `NotImplementedError`; nothing of the conversation under `kept`: a
   `RuntimeError` naming the conversation and where it was looked for. Under a flow,
-  [`agent.spawn(carry_on=session.kept)`](/reference/flows#spawn).
+  [`agent.fork(session.kept)`](/reference/flows#fork).
 
 ### Working directory {#the-directory-a-session-works-in}
 

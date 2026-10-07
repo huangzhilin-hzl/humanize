@@ -30,8 +30,8 @@ A session is a conversation and nothing of where it works: each turn says where,
 driver's session is opened only as its first turn goes, there -- which is when the engine
 starts holding it -- and moved before each turn after it to wherever that one works. A fork
 holds the session it was forked from until its first turn, which is where a harness cuts it,
-and is refused then if that session has taken a turn since. A session spawned to carry on a
-conversation a run kept is opened by its first turn the same way, as a fork of that one.
+and is refused then if that session has taken a turn since. A fork of a conversation a run
+kept holds nothing: its first turn opens it as a fork of that conversation, as it is kept then.
 """
 
 from __future__ import annotations
@@ -361,18 +361,20 @@ class AgentView:
         view._line = self._lined()
         return view
 
-    async def spawn(self, *, carry_on: KeptSession | None = None) -> SessionView:
-        if carry_on is not None and not isinstance(carry_on, KeptSession):  # pyright: ignore[reportUnnecessaryIsInstance]
-            raise TypeError(f"carry_on={carry_on!r} is not a KeptSession")
+    async def spawn(self) -> SessionView:
         self._node.check()
         self._lined()
-        view = SessionView(self)
-        # Carried on as its first turn opens it, where that turn works: refused there, by
-        # the driver, where it cannot be.
-        view._carry_on = carry_on
-        return view
+        return SessionView(self)
 
-    async def fork(self, session: Session) -> SessionView:
+    async def fork(self, session: Session | KeptSession) -> SessionView:
+        if isinstance(session, KeptSession):
+            self._node.check()
+            self._lined()
+            view = SessionView(self)
+            # Carried on as its first turn opens it, from what is kept by then, where that
+            # turn works: refused there, by the driver, where it cannot be.
+            view._carry_on = session
+            return view
         forked = self._own(session)
         self._node.check()
         if forked._closed:
@@ -1352,15 +1354,14 @@ class OutworlderView:
             raise CapabilityNotGranted(f"{self._role}: an outworlder has no skills")
         return self
 
-    async def spawn(self, *, carry_on: KeptSession | None = None) -> SessionView:
-        if carry_on is not None:
-            raise UnsupportedOperation("an outworlder carries on no conversation")
+    async def spawn(self) -> SessionView:
         if self._node is not None:
             self._node.check()
         return SessionView(self, _Person(self._source))
 
-    async def fork(self, session: Session) -> SessionView:
-        del session
+    async def fork(self, session: Session | KeptSession) -> SessionView:
+        if isinstance(session, KeptSession):
+            raise UnsupportedOperation("an outworlder carries on no conversation")
         raise UnsupportedOperation("an outworlder's session cannot be forked")
 
     @overload

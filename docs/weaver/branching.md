@@ -277,12 +277,12 @@ if kept is not None:
 
 # In a later run:
 kept = KeptSession(**json.loads((snapshot / "kept.json").read_text()))
-again = await agent.spawn(carry_on=kept)
+again = await agent.fork(kept)
 await agent.run("carry on where you were", session=again, env=workspace)
 ```
 
 `kept.directory` is where the earlier run keeps the conversation, which goes on with it: the
-new session starts from wherever the conversation had got to by its first turn. To carry it on
+fork starts from wherever the conversation had got to by its first turn. To carry it on
 from the point where you wrote `kept` down, copy that directory beside your snapshot there and
 point `directory` at the copy, `dataclasses.replace(kept, directory=…)`; the copy outlives the
 run's own files too. Copy it only where the run keeps its sessions itself, as it does on

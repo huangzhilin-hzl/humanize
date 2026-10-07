@@ -362,8 +362,8 @@ async def test_a_cli_without_the_hook_is_refused() -> None:
 session (`forks=True` one that can). A fake forks as its CLI would: only a session that has
 taken a turn, and its first turn is refused if the parent has taken another since the fork,
 so run the parent once before forking it and take the fork's first turn before the parent's
-next. A fake session's `kept` can be handed to `spawn(carry_on=…)` in a later `run_fake` of the
-same test, and the new session starts out with the prompts the first has been given by its
+next. A fake session's `kept` can be handed to `fork(…)` in a later `run_fake` of the
+same test, and the fork starts out with the prompts the first has been given by its
 first turn, as a real one does; a copy of `kept.directory` holds the prompts it had been given
 when it was copied. `model=`, `effort=` and `provider=` set what it reports about itself.
 
@@ -380,7 +380,7 @@ when it was copied. `model=`, `effort=` and `provider=` set what it reports abou
 | `session.tools` | each tool its replies reached for, with the input, and whether it was allowed |
 | `session.placement.workdir` | where it worked |
 | `session.closed`, `session.forked_from` | whether it is over, and the session it was forked from |
-| `session.carried_on` | the `KeptSession` it was spawned to carry on, or `None` |
+| `session.carried_on` | the `KeptSession` it is a fork of, or `None` |
 
 ## Script the workspace
 

@@ -69,7 +69,7 @@ class Envs(EnvCollection):
 async def carried(task, *, agents, envs, params, ctx):
     worker = agents["worker"]
     kept = KeptSession(**json.loads(pathlib.Path(task).read_text()))
-    session = await worker.spawn(carry_on=kept)
+    session = await worker.fork(kept)
     return await worker.run("what was the word?", session=session, env=envs["there"])
 """
 

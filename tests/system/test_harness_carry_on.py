@@ -1,6 +1,6 @@
 """A conversation one real run kept is carried on by a later one, from a copy, elsewhere.
 
-Which is what `Agent.spawn(carry_on=...)` is for. A flow tells its agent a word and writes
+Which is what `Agent.fork` of a `KeptSession` is for. A flow tells its agent a word and writes
 down where the conversation is kept; that is copied where a snapshot of the run would copy it,
 and the run's own is removed; a later run, working in a copy of the workspace, carries the copy
 on and asks for the word back -- a second process reading the conversation, under an id of its
@@ -121,7 +121,7 @@ async def both(task, *, agents, envs, params, ctx):
     said = []
     for at in asked["snapshots"]:
         kept = KeptSession(**json.loads((pathlib.Path(at) / "kept.json").read_text()))
-        session = await worker.spawn(carry_on=kept)
+        session = await worker.fork(kept)
         try:
             said.append(await worker.run(
                 "What is the code word I asked you to remember last? Reply with it alone.",
@@ -152,7 +152,7 @@ class Envs(EnvCollection):
 @flow(agents=Agents, envs=Envs, params=FlowParams)
 async def carried(task, *, agents, envs, params, ctx):
     worker = agents["worker"]
-    session = await worker.spawn(carry_on=KeptSession(**json.loads(pathlib.Path(task).read_text())))
+    session = await worker.fork(KeptSession(**json.loads(pathlib.Path(task).read_text())))
     return await worker.run(
         "What is the code word I asked you to remember? Reply with the code word alone.",
         session=session,

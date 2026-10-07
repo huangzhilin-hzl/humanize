@@ -1659,8 +1659,8 @@ class HarnessSession:
         conversation carries on as a fork of itself, from an agent of its own built there,
         refused where a fork there would be: the agent and conversation it leaves are kept
         until it closes, the fork being cut from them by the next turn. One that has taken
-        no turn the CLI named has nothing to carry, and starts afresh there -- or, spawned to
-        carry on a kept conversation, as a fork of that one there.
+        no turn the CLI named has nothing to carry, and starts afresh there -- or, carrying
+        on a kept conversation, as a fork of that one there.
         """
         self._check_open()
         was = self._placement

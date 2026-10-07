@@ -29,9 +29,9 @@ granted what it declared -- with the drivers underneath swapped for these::
   where a real one's do: anywhere on the machine it is on for a harness that forks
   elsewhere, and only to where it already works for every other. A session's `kept` is a
   directory on this machine its conversation is written to as it goes on, once that is read,
-  as a real CLI writes its own: a session spawned to carry it on, in this run or a later one of
-  this process, starts from what it says by then, or from a copy of it taken earlier -- where
-  a real one would, on the harness that kept it, where that forks, on this machine, and in the
+  as a real CLI writes its own: a fork of it, in this run or a later one of this process,
+  starts from what it says by its first turn, or from a copy of it taken earlier -- where a
+  real one would, on the harness that kept it, where that forks, on this machine, and in the
   workdir it was had in for a harness that forks only in place.
 - :class:`FakeEnvDriver` is a dictionary of files under a workdir, with worktrees,
   temporary copies, scratch directories and snapshots as copies of it, and `exec` answered by a
