@@ -80,7 +80,9 @@ def plain_writes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(atomic, "writes", writes)
 
 
-async def test_a_session_read_back_carries_on_from_where_it_stood_when_written() -> None:
+async def test_a_session_read_back_carries_on_from_where_it_stood_when_written() -> (
+    None
+):
     coder = FakeAgentDriver(reply="ok")
 
     await run_fake(remembers, agents={"coder": coder})
@@ -90,13 +92,17 @@ async def test_a_session_read_back_carries_on_from_where_it_stood_when_written()
     assert carried.prompts == ["the codeword is papaya", "what was the codeword?"]
     assert carried.carried_on is not None
     assert carried.carried_on.id == kept.id
-    assert not carried.carried_on.at.exists(), "a run with no journal keeps nothing after"
+    assert not carried.carried_on.at.exists(), (
+        "a run with no journal keeps nothing after"
+    )
 
 
 @pytest.mark.usefixtures("plain_writes")
 async def test_a_later_run_carries_on_what_an_earlier_one_kept(tmp_path: Path) -> None:
     journal = tmp_path / "resume.jsonl"
-    await run_fake(remembers, agents={"coder": FakeAgentDriver(reply="ok")}, journal=journal)
+    await run_fake(
+        remembers, agents={"coder": FakeAgentDriver(reply="ok")}, journal=journal
+    )
     coder = FakeAgentDriver(reply="ok")
 
     await run_fake(
@@ -121,7 +127,9 @@ async def test_one_kept_session_is_carried_on_by_every_run_picking_it_up(
     tmp_path: Path,
 ) -> None:
     journal = tmp_path / "resume.jsonl"
-    await run_fake(remembers, agents={"coder": FakeAgentDriver(reply="ok")}, journal=journal)
+    await run_fake(
+        remembers, agents={"coder": FakeAgentDriver(reply="ok")}, journal=journal
+    )
     picked = tmp_path / "picked.jsonl"
     arms: list[list[str]] = []
     for arm in ("a", "b"):
@@ -147,10 +155,14 @@ async def test_a_kept_session_is_carried_on_only_by_the_harness_that_kept_it(
     tmp_path: Path,
 ) -> None:
     journal = tmp_path / "resume.jsonl"
-    await run_fake(remembers, agents={"coder": FakeAgentDriver(reply="ok")}, journal=journal)
+    await run_fake(
+        remembers, agents={"coder": FakeAgentDriver(reply="ok")}, journal=journal
+    )
     coder = FakeAgentDriver(HarnessKind.CODEX, reply="ok")
 
-    with pytest.raises(UnsupportedOperation, match="codex cannot carry on a conversation claude"):
+    with pytest.raises(
+        UnsupportedOperation, match="codex cannot carry on a conversation claude"
+    ):
         await run_fake(
             remembers,
             agents={"coder": coder},
@@ -166,7 +178,9 @@ async def test_a_kept_session_whose_copy_is_gone_cannot_be_carried_on(
     tmp_path: Path,
 ) -> None:
     journal = tmp_path / "resume.jsonl"
-    await run_fake(remembers, agents={"coder": FakeAgentDriver(reply="ok")}, journal=journal)
+    await run_fake(
+        remembers, agents={"coder": FakeAgentDriver(reply="ok")}, journal=journal
+    )
     shutil.rmtree(tmp_path / "conversations")
 
     with pytest.raises(SessionError, match="no conversation"):
@@ -274,5 +288,7 @@ async def hands_down(
 async def test_a_session_is_kept_only_in_the_state_of_the_call_it_is_of() -> None:
     _HANDED.clear()
 
-    with pytest.raises(StateNotSerializable, match="only in the state of the flow call"):
+    with pytest.raises(
+        StateNotSerializable, match="only in the state of the flow call"
+    ):
         await run_fake(hands_down, agents={"coder": FakeAgentDriver(reply="ok")})

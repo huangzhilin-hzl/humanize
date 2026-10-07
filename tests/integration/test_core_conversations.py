@@ -11,7 +11,6 @@ put back to a copy of it.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from typing import TYPE_CHECKING
 
@@ -22,6 +21,7 @@ from hmz.sdk import Hmz
 from tests.integration.doubles_core import AGENT, hmz_exec, install, started, write_flow
 
 if TYPE_CHECKING:
+    import subprocess
     from pathlib import Path
 
 #: A flow that keeps its session in its state, and goes on with it as `then` says; a run picking
