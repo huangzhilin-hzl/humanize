@@ -215,12 +215,6 @@ class Usage(pydantic.BaseModel):
     cost: float = 0.0 # In USD.
     output_tokens: int = 0
 
-@dataclass(frozen=True, slots=True)
-class KeptSession:
-    harness: HarnessKind # Read back from its name as written to JSON; a name that is no harness's raises ValueError.
-    id: str # The harness's own id for the conversation.
-    directory: str # Where it is kept, laid out as the harness lays out its home: a run's `sessions/<cli>/`, or a copy of one.
-
 class Session(Protocol):
     # Only a conversation's history: where a turn works is the turn's own (`run(env=...)`),
     # so one session may take its turns in different environments.
@@ -229,9 +223,6 @@ class Session(Protocol):
 
     @property
     def usage(self) -> Usage: ... # Live updated.
-
-    @property
-    def kept(self) -> KeptSession | None: ... # None before a turn has named the conversation, and where it is kept on another machine.
 
 class Agent(Protocol):
     _permission: ClassVar[Permission]
@@ -262,9 +253,8 @@ class Agent(Protocol):
 
     async def fork(
         self,
-        session: Session | KeptSession,
+        session: Session,
     ) -> Session: ... # Cut at its own first turn, in the environment that turn is given.
-        # From a session of this agent: where it was when forked. From a KeptSession -- a session's `kept`, written down by this run or an earlier one -- what its directory holds as that turn starts, copied into where this run keeps its sessions; the copy it came from is left as it was, and a copy this run holds is never replaced. That turn refuses a KeptSession (UnsupportedOperation) for a harness that cannot fork, did not keep it, or works on another machine, and (SessionError) for a conversation that is not where it says, or of which this run holds a different copy.
 
     @overload
     def hook(
@@ -391,8 +381,10 @@ class FlowParams(pydantic.BaseModel): ...
 
 class FlowState(Protocol):
     def __getitem__(self, key: str) -> Any: ...
+        # A Session written here reads back as a new session carrying its conversation on from where it stood when written, in this run and in one resuming it alike, cut by its first turn as a fork is.
 
     def __setitem__(self, key: str, value: Any) -> None: ...
+        # Takes what JSON holds, and Sessions anywhere in it. Refuses (StateNotSerializable) anything else, including a Session that has taken no turn, an outworlder's, and one whose harness cannot carry its conversation into a later run.
 
     def __delitem__(self, key: str) -> None: ...
 

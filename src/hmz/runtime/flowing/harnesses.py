@@ -48,11 +48,10 @@ it is refused then if the session it came from has taken a turn since. A session
 turn works in another workdir moves there the same way: it carries on as a fork of itself,
 cut by that turn from a coganchor agent of its own there, on the harnesses that fork
 elsewhere, and is refused on every other -- as is one whose turn works on another machine,
-on any harness. A session may also carry on a conversation a run kept, this one or an earlier
-one, gone or not: its first turn cuts it as a fork of that conversation, recalled from where it
-was kept, on the harness that kept it, where that harness forks, and on this machine -- and
-not where the run holds another copy of it, which is never replaced. What a session's CLI
-keeps is answered only for a CLI run here.
+on any harness. A session may also carry on a conversation a session kept, in this run or an
+earlier one: its first turn cuts it as a fork of that conversation, recalled from where it was
+kept, on the harness that kept it, where that harness forks, and on this machine -- and not
+where the run holds another copy of it, which is never replaced.
 
 :func:`open_outworlder` is the driver for whoever is outside the run.
 """
@@ -78,7 +77,6 @@ from hmz.flows import (
     HarnessSandboxed,
     HarnessUnrecoverable,
     HookKind,
-    KeptSession,
     OutputTokensExceeded,
     OutworlderAway,
     PermissionRequestHookAgentMixin,
@@ -94,10 +92,11 @@ from hmz.flows import (
 
 from . import harnessing
 from .specs import spelled
-from .spi import HARNESS_CAPABILITIES, HookBridge
+from .spi import HARNESS_CAPABILITIES, HookBridge, Kept
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
+    from pathlib import Path
 
     import pydantic
 
@@ -359,7 +358,7 @@ class HarnessDriver:
         skills: tuple[Skill, ...],
         hooks: HookTable,
         fork_of: SessionHandle | None = None,
-        carry_on: KeptSession | None = None,
+        carry_on: Kept | None = None,
     ) -> HarnessSession:
         """Opens a session, which starts no CLI until its first turn.
 
@@ -369,16 +368,16 @@ class HarnessDriver:
           skills: What skills it is given, mounted where its CLI reads them.
           hooks: What is hung on the agent.
           fork_of: A session of this driver to carry on from, or None for a fresh one.
-          carry_on: A conversation kept by this run or an earlier one to carry on from, as a
-            fork of it, or None.
+          carry_on: A conversation a session kept to carry on from, as a fork of it, or
+            None.
 
         Returns:
           The session.
 
         Raises:
           SessionError: If the driver is closed, `fork_of` is not an open session of it that
-            has taken a turn, `carry_on` is not where it says it is kept, or the workdir is
-            not a directory here.
+            has taken a turn, `carry_on` is not where it says, or the workdir is not a
+            directory here.
           UnsupportedOperation: If the harness cannot fork, or not into `placement`; or
             `carry_on` was kept by another harness, or `placement` is on another machine.
           HarnessNotInstalled: If the CLI is not installed on the machine its harness runs
@@ -433,7 +432,7 @@ class HarnessDriver:
         skills: tuple[Skill, ...],
         hooks: HookTable,
         parent: HarnessSession | None,
-        carry_on: KeptSession | None = None,
+        carry_on: Kept | None = None,
     ) -> tuple[AgentBase, SessionBase]:
         """A session's own coganchor agent at `placement`, and its conversation there.
 
@@ -454,7 +453,16 @@ class HarnessDriver:
           See :meth:`open`.
         """
         if carry_on is not None:
-            self._recallable(carry_on, placement)
+            if carry_on.harness != self.harness:
+                raise UnsupportedOperation(
+                    f"{self.harness} cannot carry on a conversation {carry_on.harness} kept"
+                )
+            if self._profile is None or not self._profile.forks:
+                raise UnsupportedOperation(f"{self.harness} cannot fork a session")
+            if placement.machine is not None:
+                raise UnsupportedOperation(
+                    f"{self.harness} cannot carry a kept conversation onto another machine"
+                )
         cwd = self._where(placement)
         hung = frozenset(kind for kind in _STARTING if kind in hooks)
         config = self._configured(permission, placement, hung)
@@ -559,24 +567,6 @@ class HarnessDriver:
                 f"{self.harness} cannot {doing} a session into another workdir"
             )
         return session
-
-    def _recallable(self, carry_on: KeptSession, placement: Placement) -> None:
-        """Refuses a kept conversation this driver cannot carry on at `placement`.
-
-        Raises:
-          UnsupportedOperation: If another harness kept it, this one cannot fork, or
-            `placement` is on another machine than the one it is kept on.
-        """
-        if carry_on.harness != self.harness:
-            raise UnsupportedOperation(
-                f"{self.harness} cannot carry on a conversation {carry_on.harness} kept"
-            )
-        if self._profile is None or not self._profile.forks:
-            raise UnsupportedOperation(f"{self.harness} cannot fork a session")
-        if placement.machine is not None:
-            raise UnsupportedOperation(
-                f"{self.harness} cannot carry a kept conversation onto another machine"
-            )
 
     @staticmethod
     def _where(placement: Placement) -> str | None:
@@ -892,7 +882,7 @@ class HarnessDriver:
         skills: tuple[Skill, ...],
         parent: HarnessSession | None,
         cwd: str | None,
-        carry_on: KeptSession | None,
+        carry_on: Kept | None,
     ) -> tuple[AgentBase, SessionBase]:
         """Builds a session's own agent and its conversation, on a thread of its own.
 
@@ -911,8 +901,7 @@ class HarnessDriver:
             agent.watch(listener)
         try:
             if carry_on is not None:
-                held = agent.recall(carry_on.id, carry_on.directory, cwd)
-                return agent, held.fork()
+                return agent, agent.recall(carry_on.id, carry_on.at, cwd).fork()
             if parent is not None:
                 return agent, parent.coganchor.fork(into=agent, cwd=cwd)
         except NotImplementedError as refused:
@@ -930,16 +919,6 @@ class HarnessDriver:
         self._closed = True
         sessions, self._sessions = list(self._sessions), set()
         await asyncio.gather(*(one.close() for one in sessions))
-
-
-def _afar(machine: MachineConfig | None) -> bool:
-    """Whether a CLI whose turns land on `machine` runs there rather than here."""
-    from hmz.coganchor.elsewhere import elsewhere
-    from hmz.coganchor.machines import AnchoredConfig
-
-    return isinstance(machine, AnchoredConfig) and (
-        machine.anchor.native or elsewhere(machine.anchor)
-    )
 
 
 def _native(machine: AnchoredConfig) -> AnchoredConfig:
@@ -1085,7 +1064,7 @@ class HarnessSession:
         permission: Permission,
         skills: tuple[Skill, ...],
         bridge: HookBridge,
-        carry_on: KeptSession | None = None,
+        carry_on: Kept | None = None,
     ) -> None:
         """Initializes a session that has taken no turn.
 
@@ -1113,7 +1092,7 @@ class HarnessSession:
         self._skills = skills
         self._bridge = bridge
         #: The kept conversation it carries on, until a turn has cut a conversation of its own
-        #: from it: what one moved before that is cut from again, wherever it moves to.
+        #: from it: one moved before that is cut from it again, wherever it moves to.
         self._carry_on = carry_on
         # A question waits on a person, for as long as the loop runs.
         self._asking = HookBridge(self._loop, timeout=None)
@@ -1157,21 +1136,6 @@ class HarnessSession:
         return self._session.named
 
     @property
-    def kept(self) -> KeptSession | None:
-        """Where the CLI keeps the conversation, or None before it has said its id.
-
-        None too for a CLI run on another machine, natively or under a harness there, which
-        keeps it on that machine: where this one would say is a directory of its own.
-        """
-        named = self._session.named
-        if named is None or _afar(self._agent.config.machine):
-            return None
-        where = self._agent.kept()
-        if where is None:
-            return None
-        return KeptSession(self._driver.harness, named, str(where))
-
-    @property
     def usage(self) -> Usage:
         """Everything this session's turns have spent, up to the moment it is read."""
         with self._lock:
@@ -1180,6 +1144,24 @@ class HarnessSession:
                 cost=self._cost,
                 output_tokens=self._tokens,
             )
+
+    def keep(self, into: Path) -> Kept:
+        """Copies its conversation, as it stands; see the SPI's `SessionHandle.keep`."""
+        harness = self._driver.harness
+        if self._agent.config.machine is not None:
+            raise UnsupportedOperation(
+                f"{harness} keeps a conversation on another machine, not here"
+            )
+        named = self.id
+        if named is None:
+            raise SessionError(f"{harness}: the session has not been named yet")
+        try:
+            self._session.keep(into)
+        except NotImplementedError as refused:
+            raise UnsupportedOperation(str(refused)) from refused
+        except (RuntimeError, OSError) as refused:
+            raise SessionError(f"the session cannot be kept: {refused}") from refused
+        return Kept(harness, named, into)
 
     @property
     def driver(self) -> HarnessDriver:

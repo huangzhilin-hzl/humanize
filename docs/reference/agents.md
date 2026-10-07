@@ -690,8 +690,13 @@ history; its first turn performs the fork.
   `RuntimeError` naming the CLI, the conversation and the copy already kept, which carrying this
   one on would replace. A Claude Code fork in another directory is cut from the transcript brought
   in. A backend with no fork: `NotImplementedError`; nothing of the conversation under `kept`: a
-  `RuntimeError` naming the conversation and where it was looked for. Under a flow,
-  [`agent.fork(kept)`](/reference/flows#fork), with a session's `kept` that is not `None`.
+  `RuntimeError` naming the conversation and where it was looked for.
+- `session.keep(into)` is the other half: it copies the files `recall` would bring in --
+  the conversation's own, lineage and all, and nothing else of `agent.kept()` -- into `into`,
+  as they stand, leaving them as they were. Before any turn has landed, or with nothing of the
+  conversation kept: `RuntimeError`; a backend with no fork: `NotImplementedError`. Under a
+  flow, both are what a [session written into a flow's state](/reference/flows#sessions-in-state)
+  comes to.
 
 ### Working directory {#the-directory-a-session-works-in}
 
@@ -1706,7 +1711,6 @@ class AgentBase:
     def __call__(prompt, *, suppress=False, schema=…, cwd: Where = None) -> str | T | None
     def pursue(objective, *, suppress=False, cwd: Where = None) -> str
     def new(cwd: Where = None) -> SessionBase
-    def recall(session_id, kept, cwd: Where = None) -> SessionBase
     async def aturn(...); async def apursue(...)
     def batch(prompts, *, suppress=False, schema=…, at_once=0, cwd: Where = None) -> list
     async def abatch(...)

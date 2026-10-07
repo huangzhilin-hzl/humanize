@@ -18,9 +18,9 @@ agent declared without :class:`SteeringAgentMixin`, or a `/goal` prompt without
 whatever the harness underneath could do. A role typed as one harness's own protocol --
 :class:`ClaudeCodeAgent` and the rest -- asks for that harness and everything it can do.
 
-Everything here but the enums, :class:`Permission`, :class:`Budget`, :class:`Usage` and
-:class:`KeptSession` is a protocol for a type checker. What a flow is handed at run time is the
-runtime's own object, shaped however is fastest, and answers to these structurally.
+Everything here but the enums, :class:`Permission`, :class:`Budget` and :class:`Usage` is a
+protocol for a type checker. What a flow is handed at run time is the runtime's own object,
+shaped however is fastest, and answers to these structurally.
 """
 
 from __future__ import annotations
@@ -78,7 +78,6 @@ __all__ = [
     "GoalCommandAgentMixin",
     "GrokBuildAgent",
     "HarnessKind",
-    "KeptSession",
     "KimiCodeAgent",
     "LiteLLMAgent",
     "LoopCommandAgentMixin",
@@ -280,35 +279,6 @@ class Usage(pydantic.BaseModel):
     output_tokens: int = 0
 
 
-@dataclass(frozen=True, slots=True)
-class KeptSession:
-    """A conversation as its CLI keeps it, for a session of this run or a later one to carry on.
-
-    Plain data, so that a flow can write it down -- beside a snapshot of the workspace it was
-    working in, say -- with `dataclasses.asdict`, read it back from JSON with
-    `KeptSession(**fields)`, which makes the name `harness` was written as a
-    :class:`HarnessKind` again, and hand it to :meth:`Agent.fork` in a run that has not
-    started yet.
-
-    Attributes:
-      harness: The CLI that holds it.
-      id: What that CLI calls it.
-      directory: Where it is kept, laid out as the CLI lays out its home: a run's
-        `sessions/<cli>/`, which goes on with the conversation, or a copy of one, which holds
-        it as it was when the copy was taken.
-
-    Raises:
-      ValueError: If `harness` is not a harness.
-    """
-
-    harness: HarnessKind
-    id: str
-    directory: str
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "harness", HarnessKind(self.harness))
-
-
 class Session(Protocol):
     """One conversation of one agent: its history, and nothing of where it works.
 
@@ -327,16 +297,6 @@ class Session(Protocol):
     @property
     def usage(self) -> Usage:
         """What its turns have spent so far, up to date whenever it is read."""
-        ...
-
-    @property
-    def kept(self) -> KeptSession | None:
-        """Where its CLI keeps the conversation, or None before a turn has named it.
-
-        What :meth:`Agent.fork` takes, in this run or a later one, for as long as that
-        directory -- or a copy of it -- is still there. None too for a harness run on another
-        machine, which keeps the conversation there.
-        """
         ...
 
 
@@ -422,33 +382,20 @@ class Agent(Protocol):
         """
         ...
 
-    async def fork(self, session: Session | KeptSession) -> Session:
-        """A new session that carries on from where a conversation is.
+    async def fork(self, session: Session) -> Session:
+        """A new session that carries on from where one of this agent's sessions is.
 
-        The fork is cut as its first turn goes, in the environment that turn works in, and
-        goes on as a conversation of its own. Where it is cut from depends on what it is a
-        fork of: a session of this agent where it was when this was called, its first turn
-        being refused if that session has taken a turn since; a kept conversation where its
-        directory has it as that turn starts -- a run's `sessions/<cli>/` as far as the
-        conversation has got by then, a copy of one as far as it had got when it was copied.
+        The fork is cut as its first turn goes, in the environment that turn works in.
 
         Args:
-          session: The conversation to branch, which carries on unchanged: a session of this
-            agent, or a conversation kept by this run or an earlier one -- a session's
-            :attr:`Session.kept`. A kept one is copied into where this run keeps its
-            sessions as the fork's first turn starts, never over a copy of it there already,
-            and the one it was copied from is left as it was. That turn raises
-            :class:`~hmz.flows.errors.UnsupportedOperation` where this harness cannot fork or
-            did not keep it, or the turn works on another machine, and
-            :class:`~hmz.flows.errors.SessionError` where the conversation is not where it
-            says, or this run holds a different copy of it.
+          session: The conversation to branch. It carries on unchanged.
 
         Returns:
           The new session.
 
         Raises:
-          SessionError: If `session` is neither a kept conversation nor one of this agent's,
-            is over, or has taken no turn to carry on from.
+          SessionError: If `session` is not one of this agent's, is over, or has taken no
+            turn to carry on from.
         """
         ...
 

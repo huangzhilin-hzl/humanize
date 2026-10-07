@@ -12,11 +12,10 @@ from typing import TYPE_CHECKING, Any
 import pydantic
 import pytest
 
-from hmz.coganchor import AnchorConfig, backends
 from hmz.coganchor import agents as coganchor_agents
+from hmz.coganchor import backends
 from hmz.coganchor.agents import Question
 from hmz.coganchor.agents import base as coganchor_base
-from hmz.coganchor.machines import AnchoredConfig
 from hmz.flows import (
     AskUserHookAgentMixin,
     CostExceeded,
@@ -27,7 +26,6 @@ from hmz.flows import (
     HarnessNotInstalled,
     HarnessUnrecoverable,
     HookKind,
-    KeptSession,
     OutputTokensExceeded,
     OutworlderAway,
     Permission,
@@ -51,6 +49,7 @@ from hmz.runtime.flowing.specs import AgentSpec
 from hmz.runtime.flowing.spi import (
     HARNESS_CAPABILITIES,
     HookTable,
+    Kept,
     Limits,
     Placement,
     SessionHandle,
@@ -130,9 +129,16 @@ class Conversation:
         forked.named = "conversation-2"
         return forked
 
+    def keep(self, into: Path) -> None:
+        if self.named is None:
+            raise RuntimeError("session has not run a turn yet")
+        if self.named == "gone":
+            raise RuntimeError(f"claude: no conversation gone under {into}")
+        self.agent.kept.append((self.named, into))
+
 
 class Recalled(Conversation):
-    """A conversation a run kept, recalled: its fork is cut, and named, by its own first turn."""
+    """A conversation a session kept, recalled: its fork is cut, and named, by its first turn."""
 
     def fork(self, *, into: CLI | None = None, cwd: str | None = None) -> Conversation:
         return Conversation(into or self.agent, self.cwd if cwd is None else cwd)
@@ -169,7 +175,8 @@ class CLI:
         self.loaded: list[Any] = []
         self.watched: list[Any] = []
         self.conversations: list[Conversation] = []
-        self.recalled: list[tuple[str, str, str | None]] = []
+        self.recalled: list[tuple[str, Path, str | None]] = []
+        self.kept: list[tuple[str, Path]] = []
         self.stopped = 0
         CLI.built.append(self)
 
@@ -184,16 +191,13 @@ class CLI:
         self.conversations.append(conversation)
         return conversation
 
-    def recall(self, session_id: str, kept: str, cwd: str | None) -> Recalled:
+    def recall(self, session_id: str, kept: Path, cwd: str | None) -> Recalled:
         self.recalled.append((session_id, kept, cwd))
         if session_id == "gone":
             raise RuntimeError(f"claude: no conversation {session_id} under {kept}")
         held = Recalled(self, cwd)
         held.named = session_id
         return held
-
-    def kept(self) -> Path:
-        return Path("/runs/now/sessions/claude")
 
     def reconfigure(self, config: Config) -> None:
         self.config = config
@@ -391,16 +395,57 @@ async def test_a_harness_that_cannot_fork_refuses_to(
         driver.cut_from(session, _placed(tmp_path), doing="fork")
 
 
-#: A conversation an earlier run kept, as a flow hands it back.
-TOLD = KeptSession(HarnessKind.CLAUDE, "told", "/runs/then/sessions/claude")
+# -- a conversation kept, and carried on -------------------------------------------------
+
+
+#: A conversation a session kept, as a flow's state wrote it down.
+TOLD = Kept(HarnessKind.CLAUDE, "told", Path("/runs/then/conversations/1"))
 
 
 async def _carrying(
-    driver: HarnessDriver, placement: Placement, kept: KeptSession = TOLD
+    driver: HarnessDriver, placement: Placement, kept: Kept = TOLD
 ) -> HarnessSession:
     return await driver.open(
         placement, permission=Permission(), skills=(), hooks=HookTable(), carry_on=kept
     )
+
+
+async def test_a_session_keeps_its_conversation_once_its_cli_has_named_it(
+    coganchor: type[CLI], tmp_path: Path
+) -> None:
+    session = await _session(open_agent(_spec()), tmp_path)
+    with pytest.raises(SessionError, match="has not been named yet"):
+        session.keep(tmp_path / "kept")
+    await session.turn(TurnRequest("the codeword is papaya"), Sink())
+
+    assert session.keep(tmp_path / "kept") == Kept(
+        HarnessKind.CLAUDE, "conversation-1", tmp_path / "kept"
+    )
+    assert _cli(session).kept == [("conversation-1", tmp_path / "kept")]
+
+
+async def test_a_conversation_is_kept_only_by_a_cli_run_here(
+    coganchor: type[CLI], tmp_path: Path
+) -> None:
+    session = await _session(open_agent(_spec()), tmp_path)
+    await session.turn(TurnRequest("go"), Sink())
+    _cli(session).config = Config(machine="a machine")
+
+    with pytest.raises(UnsupportedOperation, match="on another machine"):
+        session.keep(tmp_path / "kept")
+    assert _cli(session).kept == []
+
+
+async def test_a_conversation_its_cli_did_not_keep_is_not_kept(
+    coganchor: type[CLI], tmp_path: Path
+) -> None:
+    session = await _session(open_agent(_spec()), tmp_path)
+    await session.turn(TurnRequest("go"), Sink())
+    conversation: Any = session.coganchor
+    conversation.named = "gone"
+
+    with pytest.raises(SessionError, match="cannot be kept: claude: no conversation"):
+        session.keep(tmp_path / "kept")
 
 
 async def test_a_kept_conversation_is_carried_on_as_a_fork_cut_where_it_works(
@@ -408,35 +453,17 @@ async def test_a_kept_conversation_is_carried_on_as_a_fork_cut_where_it_works(
 ) -> None:
     session = await _carrying(open_agent(_spec()), _placed(tmp_path))
 
-    assert _cli(session).recalled == [("told", TOLD.directory, str(tmp_path))]
-    assert (session.id, session.kept) == (None, None)
+    assert _cli(session).recalled == [("told", TOLD.at, str(tmp_path))]
+    assert session.id is None
     await session.turn(TurnRequest("what was the word?"), Sink())
-    assert session.kept == KeptSession(
-        HarnessKind.CLAUDE, "conversation-1", "/runs/now/sessions/claude"
-    )
-
-
-@pytest.mark.parametrize(
-    ("harness", "native", "here"),
-    [("local", False, True), ("local", True, False), ("ssh://harbor", False, False)],
-    ids=["harnessed-here", "native-there", "harnessed-elsewhere"],
-)
-async def test_a_conversation_is_kept_here_only_by_a_cli_run_here(
-    coganchor: type[CLI], tmp_path: Path, harness: str, native: bool, here: bool
-) -> None:
-    session = await _session(open_agent(_spec()), tmp_path)
-    await session.turn(TurnRequest("go"), Sink())
-    anchor = AnchorConfig(target="ssh://box", harness=harness, native=native)
-    _cli(session).config = Config(machine=AnchoredConfig(anchor=anchor))
-
-    assert (session.kept is not None) is here
+    assert session.id == "conversation-1"
 
 
 @pytest.mark.parametrize(
     ("kept", "forks", "machine", "why"),
     [
         (
-            KeptSession(HarnessKind.CODEX, "told", "/runs/then/sessions/codex"),
+            Kept(HarnessKind.CODEX, "told", Path("/runs/then/conversations/1")),
             True,
             None,
             "claude cannot carry on a conversation codex kept",
@@ -450,7 +477,7 @@ async def test_a_kept_conversation_is_refused_before_anything_is_built(
     coganchor: type[CLI],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    kept: KeptSession,
+    kept: Kept,
     forks: bool,
     machine: Any,
     why: str,
@@ -469,7 +496,7 @@ async def test_a_kept_conversation_is_refused_before_anything_is_built(
 async def test_a_kept_conversation_that_is_not_there_cannot_be_forked(
     coganchor: type[CLI], tmp_path: Path
 ) -> None:
-    gone = KeptSession(HarnessKind.CLAUDE, "gone", "/runs/then/sessions/claude")
+    gone = Kept(HarnessKind.CLAUDE, "gone", Path("/runs/then/conversations/1"))
 
     with pytest.raises(SessionError, match="cannot be forked: claude: no conversation"):
         await _carrying(open_agent(_spec()), _placed(tmp_path), gone)
@@ -483,7 +510,7 @@ async def test_a_carried_on_session_moved_before_a_turn_named_it_is_recalled_the
     session = await _carrying(open_agent(_spec()), _placed(tmp_path))
 
     assert await session.move(_placed(tmp_path / "other"))
-    assert _cli(session).recalled == [("told", TOLD.directory, str(tmp_path / "other"))]
+    assert _cli(session).recalled == [("told", TOLD.at, str(tmp_path / "other"))]
     await session.turn(TurnRequest("go on"), Sink())
     assert await session.move(_placed(tmp_path / "third"))
     assert _cli(session).recalled == [], "named: moved as a fork of its own"

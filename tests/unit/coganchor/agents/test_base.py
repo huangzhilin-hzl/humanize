@@ -893,6 +893,60 @@ def test_a_conversation_kept_otherwise_where_it_is_brought_in_is_left_as_it_is(
     assert run.said == []
 
 
+@pytest.mark.usefixtures("supervised")
+def test_a_conversation_kept_as_it_stands_is_recalled_from_there(
+    tmp_path: Path,
+) -> None:
+    """Only its own files, laid out as they sat, and recalled as they were when kept."""
+    agent = Scripted(backend="claude", script=_forking())
+    agent.epic = _Run(tmp_path / "epic")
+    session = agent.new(tmp_path)
+    session("the codeword is papaya")
+    home = agent.kept()
+    assert home is not None
+    project = home / "projects" / "-where-it-was-had"
+    project.mkdir(parents=True)
+    (project / f"{session.id}.jsonl").write_text(TOLD)
+    (project / "somebody-else.jsonl").write_text("{}\n")
+
+    session.keep(tmp_path / "snapshot")
+    (project / f"{session.id}.jsonl").write_text(LATER)
+
+    kept = tmp_path / "snapshot" / "projects" / "-where-it-was-had"
+    assert sorted(one.name for one in kept.iterdir()) == [f"{session.id}.jsonl"]
+    assert (kept / f"{session.id}.jsonl").read_text() == TOLD
+    later = Scripted(backend="claude", script=_forking())
+    later("a conversation of its own first, so that the fork is not named s-1 too")
+    child = later.recall(session.id, tmp_path / "snapshot").fork()
+    later.epic = _Run(tmp_path / "later")
+    child("what was the codeword?")
+    brought = later.kept()
+    assert brought is not None
+    assert (
+        brought / "projects" / "-where-it-was-had" / f"{session.id}.jsonl"
+    ).read_text() == TOLD
+
+
+def test_a_conversation_is_kept_only_once_it_is_one(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="has not run a turn"):
+        Scripted(backend="claude", script=_forking()).new().keep(tmp_path)
+    session = Scripted(script=_forking()).new()
+    session("hello")
+    with pytest.raises(NotImplementedError, match="no way of carrying"):
+        session.keep(tmp_path)
+
+
+@pytest.mark.usefixtures("supervised")
+def test_a_conversation_nothing_kept_is_not_kept(tmp_path: Path) -> None:
+    agent = Scripted(backend="claude", script=_forking())
+    agent.epic = _Run(tmp_path / "epic")
+    session = agent.new(tmp_path)
+    session("hello")
+    with pytest.raises(RuntimeError, match=f"no conversation {session.id} under"):
+        session.keep(tmp_path / "snapshot")
+    assert not (tmp_path / "snapshot").exists()
+
+
 def test_a_conversation_is_recalled_only_from_where_it_was_kept(tmp_path: Path) -> None:
     _claude_kept(tmp_path / "snapshot")
 

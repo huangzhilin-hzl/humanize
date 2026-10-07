@@ -56,7 +56,7 @@ Everything below is importable from `hmz.flows` and listed in `hmz.flows.__all__
 | Group | Names |
 | --- | --- |
 | Defining a flow | [`flow`](#flow), [`Flow`](#flow-protocol), [`FlowFn`](#flowfn), [`load`](#load), [`FlowParams`](#flowparams), [`FlowContext`](#flowcontext), [`FlowState`](#flowstate) |
-| Agents | [`AgentCollection`](#agentcollection), [`Agent`](#agent), [`Session`](#session), [`KeptSession`](#keptsession), [`Outworlder`](#outworlder), [`HarnessKind`](#harnesskind), [`HARNESS_AGENTS`](#harness-agents) |
+| Agents | [`AgentCollection`](#agentcollection), [`Agent`](#agent), [`Session`](#session), [`Outworlder`](#outworlder), [`HarnessKind`](#harnesskind), [`HARNESS_AGENTS`](#harness-agents) |
 | Harness protocols | `ClaudeCodeAgent`, `CodexAgent`, `CursorAgent`, `OpenCodeAgent`, `MiMoCodeAgent`, `MiniMaxCodeAgent`, `QwenCodeAgent`, `KimiCodeAgent`, `GrokBuildAgent`, `PiAgent`, `AntigravityAgent`, `DeepSeekHarnessAgent`, `LiteLLMAgent` ([table](#what-each-harness-serves)) |
 | Agent mixins | `GoalCommandAgentMixin`, `LoopCommandAgentMixin`, `SteeringAgentMixin`, `PermissionRequestHookAgentMixin`, `SubagentStartHookAgentMixin`, `SubagentStopHookAgentMixin`, `AskUserHookAgentMixin` ([table](#asking-for-an-agent-that-can-do-something)) |
 | Permissions | [`Permission`](#permission), [`PermissionKind`](#permissionkind) |
@@ -251,11 +251,65 @@ and `get(key, default=None)`.
 | --- | --- |
 | `state[key] = value` | `key` must be a `str`, else `StateNotSerializable` (`a state key is a string, not <key>`). `value` is serialized with `json.dumps(..., allow_nan=True)`; a value it cannot serialize (or a recursion error) raises `StateNotSerializable` (also a `TypeError`): `<type> cannot be kept in a flow's state: <error>`. What is stored is the JSON round-trip of the value (a tuple becomes a list, dict keys become strings), so a fresh run and a resumed run read identical values. The write is appended to the journal and flushed before `__setitem__` returns. |
 | `del state[key]` | Removes the key; `KeyError` if absent. Journaled and flushed. |
-| `state[key]` | `KeyError` if absent. |
+| `state[key]` | `KeyError` if absent. A [session kept](#sessions-in-state) in the value is read back as a new session each time. |
 | Mutating a value in place | Not recorded. Assign the value again to record it. |
 
 A resumable flow run without a journal (a resumable flow called from a non-resumable run, or
 [`run_fake`](#run-fake) without `journal=`) gets a state held in memory only.
+
+#### Sessions in state {#sessions-in-state}
+
+A [`Session`](#session) may be written into the state, alone or anywhere inside a value. The
+write keeps its conversation **as it stands then**: the runtime copies that conversation's own
+files, and nothing else of the CLI's home, into `conversations/<id>/` beside the journal (a
+temporary directory removed with the run where there is no journal). Every read of the key
+answers a **new** session of the call's agent of the same role, whose first `run` carries the
+copy on as a [fork](#fork): from where it stood when written, whatever the original session
+did afterwards. This holds in the run that wrote it and in every run [picking it
+up](#a-flow-that-can-be-picked-up), so one kept session can be carried on by several later
+runs, each a run of its own.
+
+```python
+session = await coder.spawn()
+await coder.run(task, session=session)
+ctx.state["boundary"] = session          # kept as it stands now
+await coder.run("go on", session=session)
+
+# here, or in a later run picking this one up:
+again = ctx.state["boundary"]            # a new session, carrying on the kept conversation
+await coder.run("carry on", session=again, env=envs["repo"])
+```
+
+Refused by the write, with `StateNotSerializable` and nothing written down:
+
+| Session | Message |
+| --- | --- |
+| has taken no turn | `<role>: the session to keep has taken no turn to carry on from` |
+| a turn of it is under way, or it is over | `<role>: a turn of the session to keep is under way` / `<role>: the session to keep is over` |
+| of an agent another flow call was handed | `<role>: a session is kept only in the state of the flow call it is of` |
+| an [outworlder](#outworlder)'s | `an outworlder's session cannot be kept in a flow's state` |
+| its harness does not fork (`cursor-agent`, `mcode`, `agy`, `dsh`) | `<role>: <harness> cannot fork a session` (worded by the CLI's driver) |
+| its harness keeps conversations as database rows (`opencode`, `mimo`) | `<role>: …` (the conversation cannot be found as files) |
+| its last turn ran on another machine | `<role>: <harness> keeps a conversation on another machine, not here` |
+
+Refused by the read-back session's first `run`, before the CLI starts or anything is copied:
+
+| Condition | Raises |
+| --- | --- |
+| the role's agent is now another harness | `UnsupportedOperation`: `<harness> cannot carry on a conversation <harness> kept` |
+| the turn's `env` is on another machine | `UnsupportedOperation`: `<harness> cannot carry a kept conversation onto another machine` |
+| the copy is gone (its epic deleted) | `SessionError`: `the session cannot be forked: <harness>: no conversation <id> under <dir>` |
+| the run already holds a different copy of the conversation | `SessionError`: `the session cannot be forked: <harness>: another copy of conversation <id> is kept at <path> already, which carrying this one on would replace` |
+| a harness that forks only in place, given another workdir than the conversation was had in | refused by the CLI |
+
+The last-but-one is what a run that keeps no sessions of its own meets: on macOS, or with
+[`HUMANIZE_SESSIONS=off`](/reference/environment#humanize-sessions), the conversation lives in
+the CLI's own home, and once the original session has gone on past the kept point, the home
+holds a later copy of it that is never put back. Where humanize supervises a turn (Linux),
+each run keeps its sessions in its own epic and this does not arise.
+
+A session read back and written again before its first turn is written down as what it
+carries on, copying nothing.
 
 ## Agent roles {#how-many-agents-and-what-they-are-for}
 
@@ -292,7 +346,7 @@ class Agent(Protocol):
     async def run(self, prompt: str, *, session: Session, env: Env | None = None,
                   output_schema: type[M] | None = None,
                   budget: Budget | None = None) -> str | M: ...
-    async def fork(self, session: Session | KeptSession) -> Session: ...
+    async def fork(self, session: Session) -> Session: ...
     def derive(self, *, permission: Permission | None = None,
                skills: tuple[str, ...] | None = None) -> Self: ...
     def on_session_start(self, fn: HookFn | None) -> None: ...
@@ -626,8 +680,8 @@ another machine. A refused turn leaves the session where it was, ready for a tur
 
 1. Capability check for `/goal`, `/loop`; budget check (a spent budget raises its
    [`BudgetExceeded`](#budgetexceeded) leaf before anything is sent).
-2. The session's CLI is started in `env` (first turn), as a fork of what it carries on for a
-   [fork](#fork), or the session is carried to `env` (later turns), as above.
+2. The session's CLI is started in `env` (first turn) or the session is carried to `env`
+   (later turns), as above.
 3. On the session's first turn only: `SESSION_START`. A non-empty `context` is prepended to
    the prompt, separated by a blank line.
 4. `USER_PROMPT_SUBMIT` with the prompt as given. `block=True` raises `SessionError(reason)`
@@ -664,7 +718,6 @@ does: `OutputSchemaError: the answer is not a <Model>: <first 200 chars, JSON-qu
 | `env` elsewhere, on a harness that does not fork (`cursor-agent`, `mcode`, `agy`, `dsh`) | `UnsupportedOperation`: `<harness> cannot move a session` |
 | `env` another workdir, on a harness that forks only in place | `UnsupportedOperation`: `<harness> cannot move a session into another workdir` |
 | a fork's first turn, its parent having taken a turn since the fork | `SessionError`: `<role>: the session it was forked from has taken a turn since; …` |
-| the first turn of a fork of a `KeptSession`, where it cannot be carried on | see [`Agent.fork`](#fork) |
 | the turn was interrupted | `SessionError`: `the turn was interrupted` |
 | a budget over the turn is spent | the `BudgetExceeded` leaf |
 | a hard (non-graceful) limit reached mid-turn | the `BudgetExceeded` leaf; the CLI stops |
@@ -691,22 +744,15 @@ closed session, and `SessionError` where the session has no turn under way.
 ### `Agent.fork` {#fork}
 
 ```python
-async def fork(self, session: Session | KeptSession) -> Session
+async def fork(self, session: Session) -> Session
 ```
 
-Opens a new session that continues a conversation, which is unchanged: a session of this agent,
-or a conversation a run kept, this one or an earlier one -- a session's [`kept`](#session),
-written down and handed back, or a copy of where it named. The fork works wherever its turns
-are given: its first `run` cuts it, in that turn's `env`, from where the conversation is by
-then. A session of this agent is held open from the fork until that turn, and cut where it was
-when forked. A kept conversation is cut where its directory has it as that turn starts: a run's
-`sessions/<cli>/` as far as it has got, a copy as far as it had got when copied.
+Opens a new session that continues `session`'s conversation; `session` is unchanged. The fork
+works wherever its turns are given: its first `run` cuts it, in that turn's `env`.
 
 | Condition | Raises |
 | --- | --- |
-| the call's caller or the run has ended | `FlowCancelled` |
-| `session` neither a `KeptSession` nor one of this agent's sessions | `SessionError`: `<role>: <session> is not one of this agent's` |
-| `session` closed | `SessionError`: `<role>: the session to fork is over` |
+| `session` not this agent's, or closed | `SessionError` (`<role>: the session to fork is over`) |
 | `session` has taken no turn | `SessionError`: `<role>: the session to fork has taken no turn to carry on from` |
 
 What the harness cannot do is raised by the fork's first `run`:
@@ -722,47 +768,18 @@ What the harness cannot do is raised by the fork's first `run`:
 The parent is held open until the fork's first turn. See
 [Branching a conversation](/weaver/branching).
 
-**A fork of a `KeptSession`.** The conversation's files are copied into where this run keeps
-its sessions as the fork's first turn starts; the ones they were copied from are left as they
-were, so one kept conversation can be carried on any number of times. A copy this run holds
-already is never replaced: see [`KeptSession`](#keptsession). The fork itself refuses one only
-for an outworlder, and, as every call, once its caller or the run has ended (`FlowCancelled`);
-what the harness cannot do is raised by its first `run`, before its CLI is started or anything
-is copied:
-
-| Condition | Raises |
-| --- | --- |
-| kept by another harness | `UnsupportedOperation`: `<harness> cannot carry on a conversation <harness> kept` |
-| harness does not fork (`cursor-agent`, `mcode`, `agy`, `dsh`) | `UnsupportedOperation`: `<harness> cannot fork a session` |
-| the turn's `env` on another machine | `UnsupportedOperation`: `<harness> cannot carry a kept conversation onto another machine` |
-| nothing of the conversation under its `directory` | `SessionError`: `the session cannot be forked: <harness>: no conversation <id> under <directory>` |
-| a different copy of the conversation where this run keeps its sessions already | `SessionError`: `<harness>: another copy of conversation <id> is kept at <path> already, which carrying this one on would replace` |
-
-A turn refused for any but the last of these leaves the fork unopened, ready for a turn
-elsewhere. The last is raised later in that turn, after its `SESSION_START` and
-`USER_PROMPT_SUBMIT` hooks and just before its CLI would start: the fork is open where that turn
-works by then, nothing has been copied, and its next turn tries again. Until a turn of it has
-named it, a turn given another workdir cuts it there instead.
-
-On a harness that forks only in its own directory (`grok`, `mimo`, `opencode`, `pi`, `qwen`,
-an ACP CLI), take the first turn where the conversation was had: the CLI looks for it there.
-`opencode` and `mimo` keep a conversation as rows of a database rather than as files of its
-own, so `directory` holds nothing of one to carry on, and the first turn raises `SessionError`.
-
 ### `Session` {#session}
 
 ```python
 class Session(Protocol):
     agent: Agent       # read-only properties
     usage: Usage
-    kept: KeptSession | None
 ```
 
 | Property | Value |
 | --- | --- |
 | `agent` | The agent whose conversation this is. |
 | `usage` | What its turns have spent, current on every read. |
-| `kept` | Where its CLI keeps the conversation, as a [`KeptSession`](#keptsession) to [`fork`](#fork) in this run or a later one. `None` before a turn has named it, for a harness run on another machine, which keeps it there, and always for an outworlder's session. |
 
 A session holds no environment: each turn is given one.
 
@@ -775,39 +792,6 @@ A session holds no environment: each turn is given one.
 Closing runs on the run's event loop exactly once and fires `SESSION_END`. A fork keeps its
 parent open until the fork's first turn. A turn that is cancelled (a `TaskGroup` sibling
 failing, a deadline, <kbd>ctrl+c</kbd>) interrupts the CLI.
-
-### `KeptSession` {#keptsession}
-
-```python
-@dataclass(frozen=True, slots=True)
-class KeptSession:
-    harness: HarnessKind
-    id: str          # what the CLI calls the conversation
-    directory: str   # where it is kept, laid out as the CLI lays out its home
-```
-
-Plain data: `dataclasses.asdict` writes one down, and `KeptSession(**fields)` reads it back
-from JSON, turning the name `harness` was written as back into a
-[`HarnessKind`](#harnesskind), so a flow can keep one beside a snapshot of its workspace and
-hand it to a run that has not started yet. A `harness` that is not a harness's name raises
-`ValueError`.
-
-`directory` is where the CLI keeps its conversations, and it goes on changing with them: a
-fork of one starts from where it has got to as the fork's first turn starts.
-To carry it on from where it is now, copy the directory and point a `KeptSession` at the copy,
-`dataclasses.replace(kept, directory=…)`. What the directory is says whether to:
-
-| The run | `directory` | Copying it |
-| --- | --- | --- |
-| keeps its sessions itself: the default, where humanize can [supervise a turn](/reference/tracing#sessions-dir) | the run's `sessions/<cli>/`, while its [epic](/reference/files#runs) is there | copies that run's conversations of the CLI, and nothing else |
-| keeps none of its own: macOS, [`HUMANIZE_SESSIONS=off`](/reference/environment#humanize-sessions) | the CLI's own home | would copy your sign-in and every conversation the CLI has had: never do |
-
-A run holds one copy of each conversation, and never replaces it with another. A fork of a
-different copy of one the run holds is refused by its first turn,
-`SessionError`, before anything is copied: a second snapshot of a conversation another session
-carried on, a snapshot of one a session of this run is still having -- [fork](#fork) that
-session instead -- and, where the run keeps no sessions of its own, a copy of one the CLI's home
-holds as it went on. Carry different copies of one conversation on in runs of their own.
 
 ## Hooks {#hooks-in-a-flow}
 
@@ -948,7 +932,7 @@ the run; naming it with `-a` is refused
 | `away` | `True` under `hmz exec` (no one is at a prompt) and while [`/afk`](/user/afk) is on for the role. |
 | `Outworlder.new()` | A new outworlder answered by the flow through `on_outworlder_run`. Away until a hook is hung. |
 | `on_outworlder_run(fn)` | Only on an outworlder from `new()`; on any other raises `CapabilityNotGranted`: `<role>: only an outworlder made with Outworlder.new() is answered by a hook`. |
-| `fork` | `UnsupportedOperation`: `an outworlder's session cannot be forked`; of a `KeptSession`, `an outworlder carries on no conversation`. |
+| `fork` | `UnsupportedOperation`: `an outworlder's session cannot be forked`. |
 | `derive(skills=…)` | Non-empty skills raise `CapabilityNotGranted`: `<role>: an outworlder has no skills`. |
 
 **While away**, `run` returns at once: `""` for text; the schema built from defaults where
@@ -1230,7 +1214,9 @@ the name it was run under: flows kept in directories of one name -- `alice/kerne
 | a given epic without one | `<epic> has no saved progress to resume from` |
 
 **A picked-up run is a new run** with its own epic, whose `began` event names the epic it was
-`picked_up` from; the journal is copied into the new epic, compacted, and appended to.
+`picked_up` from; the journal is copied into the new epic, compacted, and appended to. A
+[session kept in state](#sessions-in-state) stays in the epic that kept it, and is read from
+there by every run picking it up.
 
 ### Journal {#journal}
 
@@ -1239,7 +1225,7 @@ the name it was run under: flows kept in directories of one name -- `alice/kerne
 | `t` | Fields | Written |
 | --- | --- | --- |
 | `call` | `id` (int), `parent` (int, `0` for the top call), `digest` (hex), `seq` (int), `ref` (canonical ref) | when a call starts; batched |
-| `set` | `id`, `key`, `value` | on each state write; flushed immediately |
+| `set` | `id`, `key`, `value` | on each state write; flushed immediately. A session in `value` is `{"\u0000session": {"harness", "id", "at", "role"}}`, `at` being its copy |
 | `del` | `id`, `key` | on each state delete; flushed immediately |
 | `session` | `id`, `role`, `harness`, `model`, `session` (the CLI's id) | once the CLI names the session (at open or during the first turn); batched |
 | `tmp` | `id`, `env` (role), `kind` (`temp_clone` \| `scratch`), `name` (the id), `chain`, `workdir` | when a copy or scratch directory is made; batched |
@@ -2055,7 +2041,7 @@ FakeAgentDriver(harness: HarnessKind | str = "claude", *, reply: Reply = None,
 | `model`, `effort`, `provider` | Reported identity. |
 | `capabilities` | Mixins served, overriding the harness's. |
 | `cost`, `output_tokens`, `seconds` | Reported per answer; nothing waits. |
-| `forks` | Whether it can fork; `None` for whether its harness can (all but `cursor-agent`, `mcode`, `agy`, `dsh`). A fork is refused as [`Agent.fork`](#fork) refuses it: of a session with no turn, onto another machine, or into another workdir on a harness other than Claude Code, Codex or Kimi Code; and at its first turn if the parent has taken a turn since. A [fork](#fork) of a `KeptSession` is refused as a real one is, by its first turn, and on a harness that forks only in place by one in another workdir than the conversation was had in (`SessionError`); it starts from the prompts the conversation had been given as that turn starts, read from where a fake session's `kept` names, or from a copy of that directory. A fake does not hold a run to one copy of a conversation: a fork of a different copy of one the run carried on already is not refused, as it is for real. |
+| `forks` | Whether it can fork; `None` for whether its harness can (all but `cursor-agent`, `mcode`, `agy`, `dsh`). A fork is refused as [`Agent.fork`](#fork) refuses it: of a session with no turn, onto another machine, or into another workdir on a harness other than Claude Code, Codex or Kimi Code; and at its first turn if the parent has taken a turn since. |
 | `names_late` | Sessions have no id until their first turn gets past its hooks. |
 
 | Attribute | |
@@ -2080,13 +2066,7 @@ turn.
 | `await until_steered() -> str` | Waits for a `steer` and returns it. |
 
 Attributes: `prompts`, `requests`, `steered` (prompt, queued), `tools` (name, input, ran),
-`forked_from`, `carried_on` (the `KeptSession` it carries on), `permission`, `skills`,
-`turns`, `named`, `closed`, `id`, `kept`, `usage`.
-
-`kept` names a directory of the process's own, `$TMPDIR/hmz-fake-sessions-*/<harness>/`, gone
-as the process ends. Once it is read, the session's prompts are written there as `<id>.json`,
-and again after every turn: but for `opencode` and `mimo`, which keep a conversation in a
-database, so that carrying one on is refused as it is for theirs.
+`forked_from`, `permission`, `skills`, `turns`, `named`, `closed`, `id`, `usage`.
 
 ::: warning `until_steered()` waits indefinitely
 Give such a test a hard deadline:

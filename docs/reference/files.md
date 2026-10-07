@@ -272,7 +272,8 @@ One run ([Tracing › Epics](/reference/tracing#epics) has every schema). `<stam
 | `profile.jsonl` | profiled runs only | [profile](/reference/tracing#profile-jsonl) |
 | `host.log` | runs held by a [host process](/reference/daemon#files) only; appended (`0600`), never rotated | that process's descriptors 1 and 2 while the run is the one it holds: output of the CLIs the run started, and the carrier's failures |
 | `.held` | empty, `0600`; `flock`ed exclusively by the process running the run until `ended` is written | a run whose `.held` is locked is still going, and is not [picked up](/reference/cli#picking-a-run-up) |
-| `sessions/<cli>/…` | by the CLI itself, redirected; and by humanize, a conversation a session [carries on](/reference/flows#fork) copied in as its first turn starts, a file at a time, never over one already there | the CLI's own layout |
+| `sessions/<cli>/…` | by the CLI itself, redirected | the CLI's own layout |
+| `conversations/<hex>/…` | resumable runs only; one per [session written into a flow's state](/reference/flows#sessions-in-state), copied as the write is made | that conversation's own files, in the CLI's own layout; read by every run picking this one up |
 | `traces/*.trace.json` | on demand; plain write | [Chrome trace](/reference/tracing#document) |
 
 Epics are never deleted by humanize.
@@ -296,7 +297,6 @@ Every path in this section is safe to delete while humanize is not running.
 | the same path, on a machine a supervised agent's commands run on | that agent's commands' `TMPDIR` there | kept |
 | `$TMPDIR/humanize-hook-*/hook.sock`, `humanize-tools-*/tools.sock`, `humanize-preload-*/said.sock` | sockets a CLI reports hooks, tool calls and preload events on | with the session |
 | `$TMPDIR/hmz-dsh-*/humanize.patch.yml`, `hmz-qwen-*/` | per-session CLI configuration | with the session |
-| `$TMPDIR/hmz-fake-sessions-*/<harness>/<id>.json` | what a [fake session](/reference/flows#fakesession) was told, once its `kept` was read | when the process ends |
 | `$TMPDIR/humanize-<uid>/pinned/<blake2b-8(url)>/<sha>/` | checkouts of [`git+` refs](/reference/flows#refs), and of the releases [installed](/reference/flows#installing): a full clone with `--no-checkout` into `.<uuid>`, checked out detached at `<sha>`, renamed into place; one per commit | never; cloned again when missing |
 | `$TMPDIR/humanize-<uid>/` (`0700`, refused if anyone else can write it): `humanize-<digest>.pyz` (`0700`), `<stamp>.digest` (`0600`) | the humanize bundle copied to other machines, one per source tree it was built from, and which tree built which | any `humanize-*` or `*.digest` in it untouched for 14 days, when another bundle is built; a run touches the one it uses at least hourly |
 | `$TMPDIR/humanize-<uid>/skills/<owner>-<repo>-<sha256(url)[:12]>/` | clones of skill repositories a role of a flow that was never installed names by URL ([Skills](/reference/flows#the-skills-a-flow-brings)), fetched again each run that names them | kept |
@@ -330,12 +330,6 @@ Every path in this section is safe to delete while humanize is not running.
 Antigravity's permission profiles `hmz-read-only.md`, `hmz-read-only-web.md` and
 `hmz-offline.md` are written into Antigravity's own home, `~/.gemini/antigravity-cli/agents/`,
 when their content changes.
-
-Where a run keeps no sessions of its own ([which turns](/reference/tracing#sessions-dir)), a CLI's
-home is written to as the run's `sessions/<cli>/` would be: a conversation a session
-[carries on](/reference/flows#fork) is copied in where it sat in the copy carried on, never
-over a file already there, and Claude Code's transcript of a conversation forked into another
-directory is copied to that directory's folder under `projects/`.
 
 ## Retention
 

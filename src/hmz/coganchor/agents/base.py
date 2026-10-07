@@ -2578,6 +2578,45 @@ class SessionBase(ABC):
                         raise refused(target) from None
         self._carry(cwd)
 
+    def keep(self, into: str | os.PathLike[str]) -> None:
+        """Copies this conversation, as it stands, into a directory of its own.
+
+        What :meth:`AgentBase.recall` takes back: every file of it where its agent keeps
+        sessions -- lineage and all, as recalling brings them in -- copied to where it sits
+        there, so that `into` is laid out as the CLI's home is and holds this conversation
+        and nothing else, no other conversation and nothing the CLI signs in with. The files
+        it was copied from are left as they were, and go on with the conversation.
+
+        Args:
+          into: Where to copy it: a directory that is not there yet, or is empty.
+
+        Raises:
+          NotImplementedError: If this backend has no fork, so that nothing could carry
+            the copy on.
+          RuntimeError: If no turn has landed yet, or nothing where its agent keeps
+            sessions is this conversation.
+        """
+        import shutil
+        from pathlib import Path
+
+        if not self.forks:
+            raise NotImplementedError(
+                f"{self._agent.backend} has no way of carrying a conversation "
+                "into a second one"
+            )
+        seed = self.id  # raises while nothing has landed, which is nothing to keep
+        source = self._agent.kept()
+        files = [] if source is None else _naming(source, seed)
+        if source is None or not files:
+            raise RuntimeError(
+                f"{self._agent.backend}: no conversation {seed} under {source}"
+            )
+        at = Path(into)
+        for path in files:
+            target = at / path.relative_to(source)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
+
     def _carry(self, cwd: str) -> None:
         """Puts this conversation where a fork of it opened in another directory will look.
 

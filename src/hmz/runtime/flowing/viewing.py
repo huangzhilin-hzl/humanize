@@ -30,8 +30,8 @@ A session is a conversation and nothing of where it works: each turn says where,
 driver's session is opened only as its first turn goes, there -- which is when the engine
 starts holding it -- and moved before each turn after it to wherever that one works. A fork
 holds the session it was forked from until its first turn, which is where a harness cuts it,
-and is refused then if that session has taken a turn since. A fork of a conversation a run
-kept holds nothing: its first turn opens it as a fork of that conversation, as it is kept then.
+and is refused then if that session has taken a turn since. A session read back from a flow's
+state holds nothing: its first turn opens it as a fork of the conversation the state kept.
 """
 
 from __future__ import annotations
@@ -45,9 +45,12 @@ import contextlib
 import contextvars
 import dataclasses
 import logging
+import shutil
 import threading
 import time
+import uuid
 import weakref
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Self, overload
 
 import pydantic
@@ -65,7 +68,6 @@ from hmz.flows import (
     GoalCommandAgentMixin,
     HarnessKind,
     HookKind,
-    KeptSession,
     LoopCommandAgentMixin,
     NotificationHookParams,
     OutputSchemaError,
@@ -80,6 +82,7 @@ from hmz.flows import (
     SessionError,
     SessionStartHookParams,
     ShellEnvMixin,
+    StateNotSerializable,
     SteeringAgentMixin,
     StopHookParams,
     SubagentStartHookAgentMixin,
@@ -93,10 +96,11 @@ from hmz.flows import (
 )
 
 from .declaring import Grant
-from .spi import HookTable, Limits, TurnRequest, default_result
+from .journaling import SESSION
+from .spi import HookTable, Kept, Limits, TurnRequest, default_result
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Mapping
     from pathlib import PurePosixPath
     from types import FrameType
 
@@ -134,6 +138,7 @@ if TYPE_CHECKING:
 __all__ = [
     "CALLING",
     "AgentView",
+    "Conversations",
     "EnvView",
     "OutworlderView",
     "SessionView",
@@ -366,15 +371,7 @@ class AgentView:
         self._lined()
         return SessionView(self)
 
-    async def fork(self, session: Session | KeptSession) -> SessionView:
-        if isinstance(session, KeptSession):
-            self._node.check()
-            self._lined()
-            view = SessionView(self)
-            # Carried on as its first turn opens it, from what is kept by then, where that
-            # turn works: refused there, by the driver, where it cannot be.
-            view._carry_on = session
-            return view
+    async def fork(self, session: Session) -> SessionView:
         forked = self._own(session)
         self._node.check()
         if forked._closed:
@@ -429,26 +426,16 @@ class AgentView:
         line = self._lined()
         if run.dropped:
             run.drain()
-        fork_of = None if parent is None else parent._handle
-        # `carry_on` only for a fork of a kept conversation, so that a driver written to the
-        # SPI from before it opens every other session as it did.
-        handle = await (
-            self._driver.open(
-                placement,
-                permission=self._grant.permission,
-                skills=self._brought(),
-                hooks=line.hooks,
-                fork_of=fork_of,
-            )
-            if session._carry_on is None
-            else self._driver.open(
-                placement,
-                permission=self._grant.permission,
-                skills=self._brought(),
-                hooks=line.hooks,
-                fork_of=fork_of,
-                carry_on=session._carry_on,
-            )
+        carry_on = session._carry_on
+        handle = await self._driver.open(
+            placement,
+            permission=self._grant.permission,
+            skills=self._brought(),
+            hooks=line.hooks,
+            fork_of=None if parent is None else parent._handle,
+            # Only where there is one, so that a driver written before there could be opens
+            # every other session as it did.
+            **({} if carry_on is None else {"carry_on": carry_on}),
         )
         if parent is not None:
             try:
@@ -775,8 +762,9 @@ class SessionView:
         self._closed = False
         self._error: Exception | None = None
         self._parent: SessionView | None = None
-        #: The kept conversation its first turn forks, or None.
-        self._carry_on: KeptSession | None = None
+        #: The conversation a flow's state kept, which its first turn opens it as a fork of,
+        #: or None.
+        self._carry_on: Kept | None = None
         #: How many turns it has been asked for, and how many the session it was forked from
         #: had been when it was forked -- which is where its first turn cuts it.
         self._turns = 0
@@ -801,12 +789,6 @@ class SessionView:
         """The CLI's own id for the conversation, or None before it has said one."""
         handle = self._handle
         return None if handle is None else handle.id
-
-    @property
-    def kept(self) -> KeptSession | None:
-        """Where the CLI keeps the conversation, or None before it has said its id."""
-        handle = self._handle
-        return None if handle is None else handle.kept
 
     def _named(self) -> None:
         """Its CLI has named it: written down and told, against the call that opened it.
@@ -833,6 +815,86 @@ class SessionView:
             self._error = error
         if self._handle is not None:
             self._handle.interrupt()
+
+
+class Conversations:
+    """What one flow call's state writes its sessions down as, and reads them back from.
+
+    Answers to :class:`~hmz.runtime.flowing.journaling.Conversations`. A session is written
+    down as its conversation stood then, copied by its driver into a directory of its own
+    under the run's `conversations/` -- beside its journal, or a temporary directory for a
+    run that keeps none -- and read back as a new session of the call's agent of that role,
+    which its first turn opens as a fork of the copy.
+    """
+
+    __slots__ = ("_agents", "_node")
+
+    def __init__(self, node: Call, agents: Mapping[str, Any]) -> None:
+        """For the call `node`, handed `agents`."""
+        self._node = node
+        self._agents = agents
+
+    def kept(self, value: object) -> dict[str, Any]:
+        if type(value) is not SessionView:
+            raise TypeError(
+                f"Object of type {type(value).__name__} is not JSON serializable"
+            )
+        agent = value._agent
+        if type(agent) is not AgentView:
+            raise StateNotSerializable(
+                "an outworlder's session cannot be kept in a flow's state"
+            )
+        role = agent._role
+        if agent._node is not self._node:
+            raise StateNotSerializable(
+                f"{role}: a session is kept only in the state of the flow call it is of"
+            )
+        if value._closed:
+            raise StateNotSerializable(f"{role}: the session to keep is over")
+        if value._busy:
+            raise StateNotSerializable(
+                f"{role}: a turn of the session to keep is under way"
+            )
+        handle = value._handle
+        if handle is None:
+            carried = value._carry_on
+            if carried is None:
+                raise StateNotSerializable(
+                    f"{role}: the session to keep has taken no turn to carry on from"
+                )
+            # Read back and not yet carried on: what it carries on is kept already.
+            return {SESSION: _said(carried, role)}
+        into = self._node.run.conversations() / uuid.uuid4().hex
+        try:
+            carried = handle.keep(into)
+        except (UnsupportedOperation, SessionError) as refused:
+            shutil.rmtree(into, ignore_errors=True)
+            raise StateNotSerializable(f"{role}: {refused}") from refused
+        return {SESSION: _said(carried, role)}
+
+    def carried(self, said: dict[str, Any]) -> SessionView:
+        role = str(said["role"])
+        agent = self._agents.get(role)
+        if type(agent) is not AgentView:
+            raise SessionError(
+                f"{role}: no agent of this flow call carries the session on"
+            )
+        agent._lined()
+        session = SessionView(agent)
+        session._carry_on = Kept(
+            HarnessKind(said["harness"]), str(said["id"]), Path(str(said["at"]))
+        )
+        return session
+
+
+def _said(carried: Kept, role: str) -> dict[str, str]:
+    """What a kept conversation is written down as, for a session of `role`."""
+    return {
+        "harness": str(carried.harness),
+        "id": carried.id,
+        "at": str(carried.at),
+        "role": role,
+    }
 
 
 class Opened(weakref.ref["SessionView"]):
@@ -1265,10 +1327,6 @@ class _Person:
         return None
 
     @property
-    def kept(self) -> KeptSession | None:
-        return None
-
-    @property
     def usage(self) -> Usage:
         return _NOTHING
 
@@ -1283,6 +1341,10 @@ class _Person:
     async def move(self, placement: Placement) -> bool:
         del placement
         return False
+
+    def keep(self, into: Path) -> Kept:
+        del into
+        raise UnsupportedOperation("an outworlder keeps no conversation")
 
     def interrupt(self) -> None:
         return
@@ -1372,9 +1434,8 @@ class OutworlderView:
             self._node.check()
         return SessionView(self, _Person(self._source))
 
-    async def fork(self, session: Session | KeptSession) -> SessionView:
-        if isinstance(session, KeptSession):
-            raise UnsupportedOperation("an outworlder carries on no conversation")
+    async def fork(self, session: Session) -> SessionView:
+        del session
         raise UnsupportedOperation("an outworlder's session cannot be forked")
 
     @overload

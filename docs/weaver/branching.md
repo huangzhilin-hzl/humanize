@@ -259,38 +259,38 @@ await asyncio.gather(
 )
 ```
 
-**Carry on a conversation from an earlier run.** A session's `kept` says where its CLI keeps
-the conversation, as plain data a flow can write down once a turn has named it. Hand it to
-`fork` in a later run, on the same CLI, and the new session is a fork of that conversation,
-cut by its first turn:
+**Carry a conversation on in a later run.** A fork is cut from a session this run holds. To
+branch from a point a run reached and then went past -- an experiment that replays several arms
+from each boundary of an earlier run, say -- write the session into a [resumable
+flow's](/reference/flows#a-flow-that-can-be-picked-up) state at that point. The state keeps the
+conversation as it stands then, and each run picking this one up reads back a new session
+carrying it on from there:
 
 ```python
-import dataclasses
-import json
-
-from hmz.flows import KeptSession
-
-# In one run:
-kept = session.kept  # None until a turn has named the conversation
-if kept is not None:
-    (snapshot / "kept.json").write_text(json.dumps(dataclasses.asdict(kept)))
-
-# In a later run:
-kept = KeptSession(**json.loads((snapshot / "kept.json").read_text()))
-again = await agent.fork(kept)
-await agent.run("carry on where you were", session=again, env=workspace)
+@flow(agents=Agents, envs=Envs, params=Params, resumable=True)
+async def arms(task, *, agents, envs, params, ctx):
+    agent = agents["agent"]
+    if not ctx.resumed:
+        session = await agent.spawn()
+        await agent.run(task, session=session, env=envs["workspace"])
+        ctx.state["boundary"] = session  # ①
+        await agent.run("go on", session=session, env=envs["workspace"])
+        return
+    again: Session = ctx.state["boundary"]  # ②
+    await agent.run(params.arm, session=again, env=envs["workspace"])
 ```
 
-`kept.directory` is where the earlier run keeps the conversation, which goes on with it: the
-fork starts from wherever the conversation had got to by its first turn. To carry it on
-from the point where you wrote `kept` down, copy that directory beside your snapshot there and
-point `directory` at the copy, `dataclasses.replace(kept, directory=…)`; the copy outlives the
-run's own files too. Copy it only where the run keeps its sessions itself, as it does on
-Linux: on macOS, or under `HUMANIZE_SESSIONS=off`, the directory is the CLI's own home, with
-your sign-in in it ([which is which](/reference/flows#keptsession)). A copy is copied in, never
-moved, so it can be carried on as often as you like. What the CLI cannot carry on is refused by
-the fork's first `run`; on a CLI that forks only in place, take that turn in the directory the
-conversation was had in. See [`Agent.fork`](/reference/flows#fork).
+1. **Kept as it stands now**: what the session is told afterwards is not in what was kept.
+2. **A new session** of the same role, every time it is read, whose first turn forks the kept
+   conversation. Run `hmz exec --resume -p arm=…` once per arm, each a run of its own: an arm
+   that writes nothing to the state leaves the kept session in the run the next arm picks up.
+   To pick a given run up, name its epic: `Hmz().run(…, resume=<epic>)`, or *resume run* on
+   `/epics`.
+
+Only a CLI that forks can be carried on this way, on this machine, and on the harness that kept
+it; [Sessions in state](/reference/flows#sessions-in-state) lists what is refused. Where a run
+keeps no sessions of its own (macOS, `HUMANIZE_SESSIONS=off`), a conversation the CLI's home has
+gone on with past the kept point is refused rather than put back.
 
 **Fork or derive?** They sound alike and do opposite things:
 
@@ -323,17 +323,6 @@ flow](/weaver/calling-flows#narrow-what-you-hand-on).
 - **A session with no turn has nothing to carry.** Forking one raises
   `SessionError: agent: the session to fork has taken no turn to carry on from`. `spawn` a
   fresh one instead.
-- **A run holds one copy of a conversation.** Carrying on a copy of a conversation the run
-  holds otherwise -- a second snapshot of one another session carried on, or a snapshot of a
-  session this run is still having -- is refused by the first turn, rather than putting the
-  other copy back under what is going on from it:
-
-  ```text
-  SessionError: claude: another copy of conversation 22649b04-53e4-4547-823b-f9f9afa39349 is kept at /home/you/.hmz/epics/…/sessions/claude/projects/…/22649b04-53e4-4547-823b-f9f9afa39349.jsonl already, which carrying this one on would replace
-  ```
-
-  Carry different snapshots of one conversation on in runs of their own, and fork a session of
-  this run where it is rather than carrying on a snapshot of it.
 
 ## Next steps
 
