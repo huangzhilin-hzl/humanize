@@ -613,10 +613,6 @@ session(prompt)                     # opens the conversation, then resumes it
 A failed turn raises `Failed` (a `subprocess.CalledProcessError`) and leaves the session
 unopened, so the next call retries rather than resuming something that may not exist. The
 message ends with what the CLI said and, where classified, `(<fault>: <fix>)`.
-Watchers receive one `failed` event with that diagnostic after retries and fallback are
-exhausted, before `ends`. A recovered retry or an interrupted turn returning its partial
-answer emits no failure. The TUI shows the diagnostic even with details off, so a flow that
-catches the exception can retry without hiding why the turn failed.
 
 | Attribute | Meaning |
 | --- | --- |
@@ -1280,10 +1276,6 @@ codex app-server [--strict-config] [--disable goals] [--enable|--disable <featur
 
 Threads are `thread/start`, `thread/resume` and `thread/fork`; turns are `turn/start` (model,
 effort, rung, approval, service tier, `outputSchema`); steering is `turn/steer`.
-Each turn ends on `turn/completed`, which carries its final status and error. The thread may
-report `idle` first; the driver keeps reading until completion so that errors are not lost.
-A completion with an error fails even if its status says `completed`; a successful completion
-clears any earlier reconnect error.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
