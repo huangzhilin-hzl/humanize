@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
 import pytest
@@ -143,7 +144,10 @@ def test_an_agent_holding_two_sessions_works_until_both_end() -> None:
     assert monitor.now_working() == []
 
 
-def test_the_clock_counts_the_open_turn_and_then_the_rest_since() -> None:
+def test_the_clock_counts_the_open_turn_and_then_the_rest_since(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(time, "monotonic", lambda: 40.0)
     monitor = Monitor(began=0.0)
     monitor.begins("a", "m", now=10.0)
     monitor.begins("a", "m", now=20.0)  # a second session: the clock is not restarted
