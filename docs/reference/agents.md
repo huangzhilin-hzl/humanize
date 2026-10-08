@@ -524,11 +524,7 @@ The minimum granted whatever the scopes is `LINUX_SYSTEM` and `LINUX_DEVICES` on
 `DARWIN_SYSTEM` (`/usr`, `/bin`, `/sbin`, `/System`, `/private/var/select`,
 `/private/var/db/timezone` and the handful of files under `/etc` a program reads to start) and
 `DARWIN_DEVICES` on macOS, where the root directory itself is also readable and the
-pseudo-terminals `/dev/ttys*` writable. Seatbelt also grants the current user's `mds`
-directory beneath `DARWIN_USER_CACHE_DIR` to write: Apple's Security framework locks its
-module database there while initializing TLS. Blocking that cache can make an authenticated
-Codex turn fail with `workspace routing discovery failed` before the model starts. The rest
-of the user's cache directory keeps the fence's own permissions.
+pseudo-terminals `/dev/ttys*` writable.
 
 No built-in CLI enforces any part natively: every driver's `natively` returns the whole fence,
 for the reasons below. `litellm` returns none of it: a turn is one request from this process
