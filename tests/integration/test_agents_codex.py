@@ -82,6 +82,11 @@ def turn(thread, said, asked):
     if said == "unfinished":
         done(thread, status="failed", error={"message": "it could not finish"})
         return
+    if said == "routing failure":
+        notify("thread/status/changed", threadId=thread, status={"type": "idle"})
+        done(thread, status="failed",
+             error={"message": "workspace routing discovery failed"})
+        return
     if said == "approve":
         send({"id": "ok-1", "method": "item/commandExecution/requestApproval",
               "params": {"itemId": "i-0", "threadId": thread, "turnId": "turn-1",

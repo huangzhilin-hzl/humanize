@@ -524,7 +524,11 @@ The minimum granted whatever the scopes is `LINUX_SYSTEM` and `LINUX_DEVICES` on
 `DARWIN_SYSTEM` (`/usr`, `/bin`, `/sbin`, `/System`, `/private/var/select`,
 `/private/var/db/timezone` and the handful of files under `/etc` a program reads to start) and
 `DARWIN_DEVICES` on macOS, where the root directory itself is also readable and the
-pseudo-terminals `/dev/ttys*` writable.
+pseudo-terminals `/dev/ttys*` writable. Seatbelt also grants the current user's `mds`
+directory beneath `DARWIN_USER_CACHE_DIR` to write: Apple's Security framework locks its
+module database there while initializing TLS. Blocking that cache can make an authenticated
+Codex turn fail with `workspace routing discovery failed` before the model starts. The rest
+of the user's cache directory keeps the fence's own permissions.
 
 No built-in CLI enforces any part natively: every driver's `natively` returns the whole fence,
 for the reasons below. `litellm` returns none of it: a turn is one request from this process
@@ -613,6 +617,10 @@ session(prompt)                     # opens the conversation, then resumes it
 A failed turn raises `Failed` (a `subprocess.CalledProcessError`) and leaves the session
 unopened, so the next call retries rather than resuming something that may not exist. The
 message ends with what the CLI said and, where classified, `(<fault>: <fix>)`.
+Watchers receive one `failed` event with that diagnostic after retries and fallback are
+exhausted, before `ends`. A recovered retry or an interrupted turn returning its partial
+answer emits no failure. The TUI shows the diagnostic even with details off, so a flow that
+catches the exception can retry without hiding why the turn failed.
 
 | Attribute | Meaning |
 | --- | --- |
@@ -1276,6 +1284,10 @@ codex app-server [--strict-config] [--disable goals] [--enable|--disable <featur
 
 Threads are `thread/start`, `thread/resume` and `thread/fork`; turns are `turn/start` (model,
 effort, rung, approval, service tier, `outputSchema`); steering is `turn/steer`.
+Each turn ends on `turn/completed`, which carries its final status and error. The thread may
+report `idle` first; the driver keeps reading until completion so that errors are not lost.
+A completion with an error fails even if its status says `completed`; a successful completion
+clears any earlier reconnect error.
 
 | Field | Default | Meaning |
 | --- | --- | --- |

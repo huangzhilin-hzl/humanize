@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, NoReturn
 import pytest
 from pydantic import BaseModel
 
+from hmz.coganchor import fallbacks
 from hmz.coganchor.agents import AcpAgentConfig, ClaudeCodeAgentConfig
 from hmz.coganchor.agents.allowance import Allowance, Ledger
 from hmz.coganchor.agents.base import (
@@ -343,6 +344,80 @@ def test_a_failed_turn_raises() -> None:
     assert said[-1].kind == "ends"
 
 
+@pytest.mark.parametrize("kind", [Failed, Unrecoverable])
+def test_a_final_failure_is_heard_once_in_its_conversation(
+    kind: type[Failed],
+) -> None:
+    failure = kind(1, ["double"], "partial output", "workspace discovery failed")
+    agent = Scripted(script=_failing(failure))
+    session = agent.new()
+    said: list[tuple[SessionBase | None, Event]] = []
+    agent.watch(lambda _agent, where, event: said.append((where, event)))
+
+    with pytest.raises(kind, match="workspace discovery failed") as raised:
+        session("go")
+
+    assert raised.value is failure
+    assert [(one.kind, one.text) for _, one in said] == [
+        ("begins", "go"),
+        ("failed", str(failure)),
+        ("ends", ""),
+    ]
+    assert all(where is session for where, _ in said)
+
+
+@pytest.mark.parametrize("recovers", [False, True])
+def test_only_a_final_failure_is_heard_after_retries_and_fallback(
+    monkeypatch: pytest.MonkeyPatch, recovers: bool
+) -> None:
+    attempts: list[str] = []
+
+    def first(session: Turns, prompt: str) -> Iterable[Event]:
+        del session, prompt
+        attempts.append("first")
+        raise Failed(1, ["first"], "", "first backend failed")
+
+    def last(session: Turns, prompt: str) -> Iterable[Event]:
+        del session, prompt
+        attempts.append("last")
+        if recovers and attempts.count("last") == 3:
+            return [Event("text", "recovered"), Event("result", "recovered")]
+        raise Failed(1, ["last"], "", "last backend failed")
+
+    def retries(said: str) -> fallbacks.Falls:
+        return fallbacks.Falls(said, tries=2)
+
+    def no_wait(*_args: object) -> float:
+        return 0.0
+
+    agent = Scripted(script=first)
+    alternate = Scripted(script=last)
+    monkeypatch.setattr(agent, "stands_in", lambda: alternate)
+    monkeypatch.setattr(alternate, "stands_in", lambda: None)
+    monkeypatch.setattr(fallbacks, "tried", retries)
+    monkeypatch.setattr(fallbacks, "waits", no_wait)
+    said = heard(agent)
+    session = agent.new()
+
+    if recovers:
+        assert session("go") == "recovered"
+    else:
+        with pytest.raises(Failed, match="last backend failed"):
+            session("go")
+
+    assert attempts == ["first"] * 3 + ["last"] * 3
+    failures = [one for one in said if one.kind == "failed"]
+    if recovers:
+        assert failures == []
+        assert [one.text for one in said if one.kind == "result"] == ["recovered"]
+    else:
+        assert len(failures) == 1
+        assert "last backend failed" in failures[0].text
+        assert "first backend failed" not in failures[0].text
+        assert [one for one in said if one.kind == "result"] == []
+    assert said[-1].kind == "ends"
+
+
 def test_a_failed_turn_is_suppressed_when_asked(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -541,7 +616,10 @@ def test_a_turn_cut_off_by_a_failure_answers_with_what_it_said() -> None:
         raise Failed(-9, ["double"])
 
     agent = Scripted(script=script)
+    said = heard(agent)
     assert agent("go") == "so far"
+    assert [one for one in said if one.kind == "failed"] == []
+    assert [one.text for one in said if one.kind == "result"] == ["so far"]
 
 
 # -- words put in mid-turn -------------------------------------------------------------

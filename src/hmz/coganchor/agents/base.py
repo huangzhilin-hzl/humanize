@@ -1417,7 +1417,7 @@ class SessionBase(ABC):
                                 under=event.whose,
                             )
                         yield event
-                except (subprocess.CalledProcessError, OSError, ValueError):
+                except (subprocess.CalledProcessError, OSError, ValueError) as failed:
                     # A turn taken away underneath its own reader comes back as whatever the
                     # backend makes of that -- a nonzero exit, a pipe closed while something
                     # was reading it. Only ours to answer for when something was actually
@@ -1432,6 +1432,9 @@ class SessionBase(ABC):
                     # it. What the watchdog put in place of the wreckage says what happened,
                     # and a flow that catches a failed turn is what acts on it.
                     if not self._cut or self._wedged:
+                        # Only the final failure, after retries and the fallback chain: a
+                        # flow may catch it, but its watchers still need the diagnostic.
+                        self._heard(Event(kind="failed", text=str(failed)))
                         raise
                     why = self._cutting()
                     # A line apiece, which is what each of these is: a block of the
