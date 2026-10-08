@@ -453,9 +453,7 @@ def test_a_turn_that_does_not_complete_fails_saying_why(
         _turn(agent.new(tmp_path))
 
     assert why in str(failed.value.stderr)
-    assert ("failed", str(failed.value.stderr)) in [
-        (one.kind, one.text) for one in told
-    ]
+    assert [one.text for one in told if one.kind == "failed"] == [str(failed.value)]
 
 
 def test_a_runtime_that_refuses_the_prompt_fails_the_turn(

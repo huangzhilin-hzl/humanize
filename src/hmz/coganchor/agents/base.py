@@ -1384,6 +1384,10 @@ class SessionBase(ABC):
                             # was sent on has not answered.
                             answered = event
                             continue
+                        if event.kind == "failed":
+                            # A backend may say this before raising; retries may yet recover.
+                            # Only the final exception below closes the watched turn.
+                            continue
                         self._heard(event)
                         if event.kind == "text":
                             # Kept as it goes, so that a turn cut off in the middle of a

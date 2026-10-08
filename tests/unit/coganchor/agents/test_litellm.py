@@ -27,6 +27,8 @@ from hmz.coganchor.agents.litellm import LOCAL_MAP
 from hmz.coganchor.fence import Fence
 from hmz.coganchor.providers import Provider
 
+from .doubles_core import heard
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
     from pathlib import Path
@@ -190,13 +192,16 @@ def test_a_failed_call_is_a_failed_turn_that_opens_nothing(
     litellm: _LiteLLM, tmp_path: Path
 ) -> None:
     litellm.raising = RuntimeError("boom")
-    session = _agent(tmp_path).new(tmp_path)
+    agent = _agent(tmp_path)
+    said = heard(agent)
+    session = agent.new(tmp_path)
     with pytest.raises(RuntimeError, match="boom"):
         session("hi")
     litellm.raising = KeyError("the model refused")
     with pytest.raises(Failed, match="KeyError") as failed:
         session("hi")
     assert not isinstance(failed.value, Unrecoverable)
+    assert [one.text for one in said if one.kind == "failed"] == [str(failed.value)]
     assert session.named is None
     assert session("hi", suppress=True) == ""
 

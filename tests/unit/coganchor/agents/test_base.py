@@ -345,11 +345,19 @@ def test_a_failed_turn_raises() -> None:
 
 
 @pytest.mark.parametrize("kind", [Failed, Unrecoverable])
+@pytest.mark.parametrize("spoken", [False, True])
 def test_a_final_failure_is_heard_once_in_its_conversation(
-    kind: type[Failed],
+    kind: type[Failed], spoken: bool
 ) -> None:
     failure = kind(1, ["double"], "partial output", "workspace discovery failed")
-    agent = Scripted(script=_failing(failure))
+
+    def script(session: Turns, prompt: str) -> Iterable[Event]:
+        del session, prompt
+        if spoken:
+            yield Event("failed", "backend attempt failed")
+        raise failure
+
+    agent = Scripted(script=script)
     session = agent.new()
     said: list[tuple[SessionBase | None, Event]] = []
     agent.watch(lambda _agent, where, event: said.append((where, event)))
@@ -367,21 +375,28 @@ def test_a_final_failure_is_heard_once_in_its_conversation(
 
 
 @pytest.mark.parametrize("recovers", [False, True])
+@pytest.mark.parametrize("spoken", [False, True])
 def test_only_a_final_failure_is_heard_after_retries_and_fallback(
-    monkeypatch: pytest.MonkeyPatch, recovers: bool
+    monkeypatch: pytest.MonkeyPatch, recovers: bool, spoken: bool
 ) -> None:
     attempts: list[str] = []
 
     def first(session: Turns, prompt: str) -> Iterable[Event]:
         del session, prompt
         attempts.append("first")
+        if spoken:
+            yield Event("failed", "first backend attempt failed")
         raise Failed(1, ["first"], "", "first backend failed")
 
     def last(session: Turns, prompt: str) -> Iterable[Event]:
         del session, prompt
         attempts.append("last")
         if recovers and attempts.count("last") == 3:
-            return [Event("text", "recovered"), Event("result", "recovered")]
+            yield Event("text", "recovered")
+            yield Event("result", "recovered")
+            return
+        if spoken:
+            yield Event("failed", "last backend attempt failed")
         raise Failed(1, ["last"], "", "last backend failed")
 
     def retries(said: str) -> fallbacks.Falls:
@@ -608,11 +623,14 @@ def test_interrupting_a_turn_ends_it_on_what_was_said() -> None:
     ]
 
 
-def test_a_turn_cut_off_by_a_failure_answers_with_what_it_said() -> None:
+@pytest.mark.parametrize("spoken", [False, True])
+def test_a_turn_cut_off_by_a_failure_answers_with_what_it_said(spoken: bool) -> None:
     def script(session: Turns, prompt: str) -> Iterable[Event]:
         del prompt
         yield Event("text", "so far")
         session.interrupt(why="stop")
+        if spoken:
+            yield Event("failed", "backend interrupted")
         raise Failed(-9, ["double"])
 
     agent = Scripted(script=script)
